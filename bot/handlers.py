@@ -184,7 +184,13 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
     user_id = call.from_user.id
 
-    meeting = await models.get_meeting(meeting_id, user_id)
+    try:
+        meeting = await models.get_meeting(meeting_id, user_id)
+    except Exception as exc:
+        logger.exception("get_meeting failed: %s", exc)
+        await call.answer(f"Ошибка: {exc}", show_alert=True)
+        return
+
     if not meeting:
         await call.answer("Встреча не найдена", show_alert=True)
         return
@@ -216,7 +222,11 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("summary:"))
 async def cb_meeting_summary(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
-    meeting = await models.get_meeting(meeting_id, call.from_user.id)
+    try:
+        meeting = await models.get_meeting_raw(meeting_id, call.from_user.id)
+    except Exception as exc:
+        await call.answer(f"Ошибка: {exc}", show_alert=True)
+        return
     if not meeting:
         await call.answer("Встреча не найдена", show_alert=True)
         return
@@ -229,7 +239,11 @@ async def cb_meeting_summary(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("transcript:"))
 async def cb_meeting_transcript(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
-    meeting = await models.get_meeting(meeting_id, call.from_user.id)
+    try:
+        meeting = await models.get_meeting_raw(meeting_id, call.from_user.id)
+    except Exception as exc:
+        await call.answer(f"Ошибка: {exc}", show_alert=True)
+        return
     if not meeting:
         await call.answer("Встреча не найдена", show_alert=True)
         return

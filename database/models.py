@@ -72,6 +72,17 @@ async def meeting_belongs_to_user(meeting_id: str, user_id: int) -> bool:
     return row is not None
 
 
+async def get_meeting_raw(meeting_id: str, user_id: int) -> dict | None:
+    """Get meeting without decrypting URL — safe for display purposes."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM meetings WHERE id = $1 AND user_id = $2",
+            meeting_id, user_id,
+        )
+    return dict(row) if row else None
+
+
 async def update_meeting_status(meeting_id: str, status: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

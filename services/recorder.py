@@ -344,10 +344,8 @@ async def _recording_pipeline(
         await bot.send_message(user_id, "🎙 Транскрибирую запись…")
 
         transcript = await transcribe_audio(audio_path)
-
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
-            logger.info("Audio file deleted: %s", audio_path)
+        # Аудиофайл НЕ удаляем — оставляем для отладки
+        logger.info("Audio file kept at: %s", audio_path)
 
         await models.save_transcript(meeting_id, transcript)
 
@@ -404,8 +402,7 @@ async def _recording_pipeline(
     finally:
         if audio_proc and audio_proc.returncode is None:
             audio_proc.terminate()
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
+        # Аудио не удаляем (оставляем для отладки)
         if context:
             try:
                 await context.close()
