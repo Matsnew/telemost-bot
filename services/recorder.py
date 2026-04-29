@@ -81,7 +81,7 @@ _MEETING_ENDED_SELECTORS = [
 
 
 async def _create_pulse_sink(sink_name: str) -> int | None:
-    """Load a null-sink and return its module index."""
+    """Load a null-sink, set it as default, and return its module index."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "pactl", "load-module", "module-null-sink", f"sink_name={sink_name}",
@@ -92,6 +92,12 @@ async def _create_pulse_sink(sink_name: str) -> int | None:
         if proc.returncode == 0:
             module_index = int(stdout.strip())
             logger.info("PulseAudio sink '%s' created (module %d)", sink_name, module_index)
+            # Set as default so Chromium routes audio here
+            await asyncio.create_subprocess_exec(
+                "pactl", "set-default-sink", sink_name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
             return module_index
     except Exception:
         logger.exception("Failed to create PulseAudio sink '%s'", sink_name)
@@ -283,7 +289,7 @@ async def _recording_pipeline(
             )
             browser = await p.chromium.launch(
                 executable_path=chromium_path,
-                headless=True,
+                headless=False,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -295,10 +301,14 @@ async def _recording_pipeline(
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
                     "--disable-renderer-backgrounding",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--window-size=1280,720",
                 ],
                 env={
                     **os.environ,
                     "DISPLAY": config.DISPLAY,
+                    "PULSE_SERVER": f"unix:/tmp/pulse.sock",
                     "PULSE_SINK": sink_name,
                 },
             )
