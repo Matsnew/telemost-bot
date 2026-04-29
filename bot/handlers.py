@@ -242,9 +242,9 @@ async def cb_meeting_audio(call: CallbackQuery) -> None:
     size_mb = _os.path.getsize(audio_path) / 1024 / 1024
     await call.answer(f"Отправляю аудио ({size_mb:.1f} МБ)…")
     try:
-        await call.message.answer_audio(
+        await call.message.answer_document(
             FSInputFile(audio_path, filename=f"meeting_{meeting_id[:8]}.wav"),
-            caption=f"🎵 Аудио встречи\n{size_mb:.1f} МБ",
+            caption=f"🎵 Аудио встречи · {size_mb:.1f} МБ",
         )
     except Exception as exc:
         await call.message.answer(f"❌ Не удалось отправить аудио: {exc}\n\nФайл: <code>{audio_path}</code>")
