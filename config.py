@@ -23,7 +23,7 @@ class Config:
     ALONE_THRESHOLD: int = 2  # consecutive alone-polls before stopping
 
     # Whisper
-    WHISPER_MODEL: str = "small"
+    WHISPER_MODEL: str = "tiny"
     WHISPER_LANGUAGE: str = "ru"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"

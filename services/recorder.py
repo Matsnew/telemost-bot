@@ -47,6 +47,26 @@ _PARTICIPANT_SELECTORS = [
     '[data-testid*="participant"]',
     '[class*="video-tile"]',
     '[class*="roster-item"]',
+    '[class*="MemberList"] [class*="item"]',
+    '[class*="members"] [class*="item"]',
+]
+
+_MUTE_BUTTON_SELECTORS = [
+    'button[aria-label*="микрофон" i]',
+    'button[aria-label*="mute" i]',
+    'button[title*="микрофон" i]',
+    'button[title*="mute" i]',
+    '[data-testid*="mute"]',
+    '[data-testid*="mic"]',
+]
+
+_CAMERA_OFF_SELECTORS = [
+    'button[aria-label*="камер" i]',
+    'button[aria-label*="camera" i]',
+    'button[aria-label*="видео" i]',
+    'button[title*="камер" i]',
+    '[data-testid*="camera"]',
+    '[data-testid*="video"]',
 ]
 
 _MEETING_ENDED_SELECTORS = [
@@ -158,8 +178,18 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
     logger.info("Join button clicked")
 
     # Wait for meeting room to initialise
-    await asyncio.sleep(5)
+    await asyncio.sleep(8)
     logger.info("In meeting room")
+
+    # Отключить микрофон и камеру
+    for selectors, name in [(_MUTE_BUTTON_SELECTORS, "mic"), (_CAMERA_OFF_SELECTORS, "camera")]:
+        btn = await _find_element(page, selectors, timeout_ms=2000)
+        if btn:
+            try:
+                await btn.click()
+                logger.info("Clicked %s off button", name)
+            except Exception:
+                pass
 
 
 async def _count_participants(page) -> int:
@@ -182,52 +212,32 @@ async def _count_participants(page) -> int:
 
 
 async def _wait_for_meeting_end(page) -> None:
-    """Poll every 30 s for meeting end signals."""
+    """Poll every 30 s for reliable meeting-end signals."""
     initial_url = page.url
-    consecutive_alone = 0
-    consecutive_unknown = 0
 
     while True:
         await asyncio.sleep(config.PARTICIPANT_POLL_INTERVAL)
 
-        # URL changed — likely redirected after meeting ended
+        # 1. URL изменился — Телемост перенаправил после завершения
         if page.url != initial_url:
-            logger.info("Meeting ended: page URL changed to %s", page.url)
+            logger.info("Meeting ended: URL changed → %s", page.url)
             return
 
-        # Check for explicit "meeting ended" elements
+        # 2. Появился экран завершения встречи
         for sel in _MEETING_ENDED_SELECTORS:
             try:
                 if await page.locator(sel).count() > 0:
-                    logger.info("Meeting ended: found ended-indicator")
+                    logger.info("Meeting ended: found end-screen element")
                     return
             except Exception:
                 pass
 
-        count = await _count_participants(page)
-        logger.debug("Participant count: %s", count)
-
-        if count == 0:
-            logger.info("Meeting ended (zero participants)")
+        # 3. Страница недоступна / упала
+        try:
+            await page.title()
+        except Exception:
+            logger.info("Meeting ended: page is no longer accessible")
             return
-        if count == 1:
-            consecutive_alone += 1
-            consecutive_unknown = 0
-            logger.info("Alone in meeting (%d/%d)", consecutive_alone, config.ALONE_THRESHOLD)
-            if consecutive_alone >= config.ALONE_THRESHOLD:
-                return
-        elif count == -1:
-            # Selectors didn't match — count consecutive unknowns
-            # After 20 unknowns (~10 min) stop waiting to avoid infinite loop
-            consecutive_unknown += 1
-            consecutive_alone = 0
-            logger.debug("Participant count unknown (%d/20)", consecutive_unknown)
-            if consecutive_unknown >= 20:
-                logger.info("Stopping: participant count unknown for too long")
-                return
-        else:
-            consecutive_alone = 0
-            consecutive_unknown = 0
 
 
 # ── Error handling ────────────────────────────────────────────────────────

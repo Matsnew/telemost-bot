@@ -2,20 +2,16 @@ FROM python:3.11-slim
 
 # ── System dependencies ────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Browser
     chromium \
-    # Virtual display
     xvfb \
-    # Audio
+    dbus \
+    dbus-x11 \
     pulseaudio \
     pulseaudio-utils \
     libpulse0 \
-    # Audio processing
     ffmpeg \
-    # Build tools (for asyncpg, cryptography)
     gcc \
     libpq-dev \
-    # Misc
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,22 +20,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Use system Chromium — skip Playwright's own browser download
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Application ────────────────────────────────────────────────────────────
 COPY . .
 RUN chmod +x entrypoint.sh
-
-# PulseAudio config: allow connections from any user, disable auth
-RUN mkdir -p /etc/pulse && printf '\
-[daemon]\n\
-exit-idle-time = -1\n\
-\n\
-[default]\n\
-default-sample-rate = 16000\n\
-default-sample-channels = 1\n' > /etc/pulse/daemon.conf
 
 EXPOSE 8000
 
