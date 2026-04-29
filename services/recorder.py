@@ -311,9 +311,8 @@ async def _recording_pipeline(
             await _join_meeting(page, meeting_url, bot=bot, user_id=user_id)
 
             # ── Подтверждение входа со скриншотом ─────────────────────
-            join_time = asyncio.get_event_loop().time()
-            import datetime
-            joined_at = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            from utils.time import now_msk
+            joined_at = now_msk().strftime("%d.%m.%Y %H:%M:%S МСК")
             try:
                 screenshot = await page.screenshot(full_page=False)
                 await bot.send_photo(

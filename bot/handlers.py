@@ -19,6 +19,7 @@ from database import models
 from services import recorder
 from services.analyzer import answer_question
 from bot.rate_limiter import check_ask_rate_limit
+from utils.time import fmt_msk
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -56,7 +57,7 @@ def history_inline(meetings: list) -> InlineKeyboardMarkup:
     buttons = []
     for m in meetings:
         topic = (m.get("topic") or "Без темы")[:35]
-        ts = m["created_at"].strftime("%d.%m")
+        ts = fmt_msk(m["created_at"], "%d.%m")
         status_icon = {"done": "✅", "error": "❌"}.get(m["status"], "⏳")
         buttons.append([
             InlineKeyboardButton(
@@ -92,7 +93,7 @@ def active_recordings_inline(meetings: list) -> InlineKeyboardMarkup:
     buttons = []
     for m in meetings:
         topic = (m.get("topic") or "Без темы")[:30]
-        ts = m["created_at"].strftime("%d.%m %H:%M")
+        ts = fmt_msk(m["created_at"], "%d.%m %H:%M")
         status_icon = "🔴" if str(m["id"]) in recorder.active_recordings else "🟡"
         buttons.append([
             InlineKeyboardButton(
@@ -177,7 +178,7 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
         await call.answer("Встреча не найдена", show_alert=True)
         return
 
-    ts = meeting["created_at"].strftime("%d.%m.%Y %H:%M")
+    ts = fmt_msk(meeting["created_at"], "%d.%m.%Y %H:%M")
     topic = meeting.get("topic") or "Без темы"
     tags = meeting.get("tags") or []
     participants = meeting.get("participants") or []
