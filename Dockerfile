@@ -4,7 +4,6 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Browser
     chromium \
-    chromium-driver \
     # Virtual display
     xvfb \
     # Audio
@@ -25,9 +24,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers (uses system chromium to avoid redundancy)
-RUN playwright install-deps chromium \
-    && playwright install chromium
+# Use system Chromium — skip Playwright's own browser download
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
 # ── Application ────────────────────────────────────────────────────────────
 COPY . .
