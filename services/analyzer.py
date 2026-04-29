@@ -1,12 +1,12 @@
 import json
 import logging
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from config import config
 from database import models
 
 logger = logging.getLogger(__name__)
 
-_client = AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
+_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 _METADATA_SYSTEM = (
     "Ты — ассистент для анализа транскриптов встреч. "
@@ -49,21 +49,16 @@ _PROTOCOL_PROMPT = """\
 
 
 async def _extract_metadata(transcript: str) -> tuple[list[str], str, list[str]]:
-    response = await _client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = await _client.chat.completions.create(
+        model=config.OPENAI_MODEL,
         max_tokens=512,
-        system=_METADATA_SYSTEM,
+        response_format={"type": "json_object"},
         messages=[
-            {"role": "user", "content": _METADATA_PROMPT.format(transcript=transcript[:8000])}
+            {"role": "system", "content": _METADATA_SYSTEM},
+            {"role": "user", "content": _METADATA_PROMPT.format(transcript=transcript[:8000])},
         ],
     )
-    raw = response.content[0].text.strip()
-    # Strip markdown code fences if present
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    data = json.loads(raw)
+    data = json.loads(response.choices[0].message.content)
     return (
         data.get("tags", []),
         data.get("topic", "Без темы"),
@@ -71,9 +66,7 @@ async def _extract_metadata(transcript: str) -> tuple[list[str], str, list[str]]
     )
 
 
-async def _build_protocol(
-    transcript: str, previous_meetings: list[dict]
-) -> str:
+async def _build_protocol(transcript: str, previous_meetings: list[dict]) -> str:
     if previous_meetings:
         prev_text = "\n\n---\n\n".join(
             f"Встреча от {m['created_at'].strftime('%d.%m.%Y')}"
@@ -83,29 +76,21 @@ async def _build_protocol(
     else:
         prev_text = "Нет предыдущих встреч по этой теме."
 
-    messages = [
-        {
-            "role": "user",
-            "content": _PROTOCOL_PROMPT.format(
-                previous_summaries=prev_text,
-                transcript=transcript[:12000],
-            ),
-        }
-    ]
-
-    response = await _client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = await _client.chat.completions.create(
+        model=config.OPENAI_MODEL,
         max_tokens=2048,
-        system=[
+        messages=[
+            {"role": "system", "content": _PROTOCOL_SYSTEM},
             {
-                "type": "text",
-                "text": _PROTOCOL_SYSTEM,
-                "cache_control": {"type": "ephemeral"},
-            }
+                "role": "user",
+                "content": _PROTOCOL_PROMPT.format(
+                    previous_summaries=prev_text,
+                    transcript=transcript[:12000],
+                ),
+            },
         ],
-        messages=messages,
     )
-    return response.content[0].text.strip()
+    return response.choices[0].message.content.strip()
 
 
 async def analyze_meeting(
@@ -143,9 +128,9 @@ async def answer_question(user_id: int, question: str) -> str:
         f"Вопрос: {question}"
     )
 
-    response = await _client.messages.create(
-        model=config.CLAUDE_MODEL,
+    response = await _client.chat.completions.create(
+        model=config.OPENAI_MODEL,
         max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
-    return response.content[0].text.strip()
+    return response.choices[0].message.content.strip()

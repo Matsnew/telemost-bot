@@ -7,7 +7,7 @@ def _parse_user_ids(raw: str) -> List[int]:
 
 
 class Config:
-    ANTHROPIC_API_KEY: str = os.environ["ANTHROPIC_API_KEY"]
+    OPENAI_API_KEY: str = os.environ["OPENAI_API_KEY"]
     TELEGRAM_BOT_TOKEN: str = os.environ["TELEGRAM_BOT_TOKEN"]
     DATABASE_URL: str = os.environ["DATABASE_URL"]
     ENCRYPTION_KEY: str = os.environ["ENCRYPTION_KEY"]
@@ -30,7 +30,7 @@ class Config:
     TRANSCRIPTION_WORKERS: int = 2
 
     # Claude
-    CLAUDE_MODEL: str = "claude-sonnet-4-6"
+    OPENAI_MODEL: str = "gpt-4o"
     CONTEXT_MEETINGS_LIMIT: int = 3
     ASK_SUMMARIES_LIMIT: int = 50
 
