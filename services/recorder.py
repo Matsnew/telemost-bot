@@ -107,13 +107,28 @@ async def _find_element(page, selectors: list[str], timeout_ms: int = 3000):
     return None
 
 
-async def _join_meeting(page, meeting_url: str) -> None:
+async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> None:
     logger.info("Navigating to meeting URL")
     await page.goto(meeting_url, wait_until="domcontentloaded", timeout=60_000)
+    await asyncio.sleep(3)
 
-    name_input = await _find_element(page, _NAME_INPUT_SELECTORS, timeout_ms=30_000)
+    # Send debug screenshot so we can see what Telemost shows
+    if bot and user_id:
+        try:
+            screenshot = await page.screenshot(full_page=True)
+            await bot.send_photo(
+                user_id,
+                photo=screenshot,
+                caption=f"🔍 Отладка: страница встречи\nTitle: {await page.title()}\nURL: {page.url}",
+            )
+        except Exception as e:
+            logger.warning("Failed to send debug screenshot: %s", e)
+
+    name_input = await _find_element(page, _NAME_INPUT_SELECTORS, timeout_ms=10_000)
     if name_input is None:
-        raise RuntimeError("Не найдено поле ввода имени на странице встречи")
+        raise RuntimeError(
+            f"Не найдено поле ввода имени. Title: {await page.title()} URL: {page.url}"
+        )
 
     await name_input.fill("Протоколист")
     logger.info("Name entered")
@@ -236,7 +251,7 @@ async def _recording_pipeline(
             )
             page = await context.new_page()
 
-            await _join_meeting(page, meeting_url)
+            await _join_meeting(page, meeting_url, bot=bot, user_id=user_id)
 
             audio_proc = await _start_audio_capture(audio_path, sink_name)
 
