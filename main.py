@@ -42,7 +42,7 @@ dp.message.middleware(AllowedUsersMiddleware())
 
 async def run_bot() -> None:
     logger.info("Starting aiogram polling")
-    await dp.start_polling(bot, allowed_updates=["message"])
+    await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 
 async def run_api() -> None:
