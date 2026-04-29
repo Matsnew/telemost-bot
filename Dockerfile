@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
+# ── Pre-download Whisper model ─────────────────────────────────────────────
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('medium', device='cpu', compute_type='int8')"
+
 # ── Application ────────────────────────────────────────────────────────────
 COPY . .
 RUN chmod +x entrypoint.sh
