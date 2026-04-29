@@ -270,6 +270,24 @@ async def _recording_pipeline(
 
             await _join_meeting(page, meeting_url, bot=bot, user_id=user_id)
 
+            # ── Подтверждение входа со скриншотом ─────────────────────
+            join_time = asyncio.get_event_loop().time()
+            import datetime
+            joined_at = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+            try:
+                screenshot = await page.screenshot(full_page=False)
+                await bot.send_photo(
+                    user_id,
+                    photo=BufferedInputFile(screenshot, filename="joined.png"),
+                    caption=(
+                        f"🟢 <b>Запись началась</b>\n"
+                        f"🕐 Время входа: {joined_at}\n"
+                        f"🔗 {meeting_url}"
+                    ),
+                )
+            except Exception as e:
+                logger.warning("Failed to send join screenshot: %s", e)
+
             audio_proc = await _start_audio_capture(audio_path, sink_name)
 
             await asyncio.wait_for(
@@ -325,6 +343,14 @@ async def _recording_pipeline(
             for chunk_start in range(0, len(summary), 4000):
                 await bot.send_message(user_id, summary[chunk_start:chunk_start + 4000])
 
+    except asyncio.CancelledError:
+        logger.info("Recording %s cancelled by user", meeting_id)
+        try:
+            await models.update_meeting_status(meeting_id, "cancelled")
+            await bot.send_message(user_id, "⏹ Запись остановлена вручную.")
+        except Exception:
+            pass
+        raise
     except asyncio.TimeoutError:
         await _handle_error(
             meeting_id, user_id, bot, "Превышен лимит записи (3 часа)"
@@ -365,3 +391,12 @@ def start_recording(
     active_recordings[meeting_id] = task
     task.add_done_callback(lambda _: active_recordings.pop(meeting_id, None))
     return task
+
+
+def stop_recording(meeting_id: str) -> bool:
+    """Cancel an active recording task. Returns True if task was found and cancelled."""
+    task = active_recordings.get(meeting_id)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False

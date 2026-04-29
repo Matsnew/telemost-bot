@@ -88,6 +88,25 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await message.answer(_HELP_TEXT, reply_markup=main_keyboard())
 
 
+def active_recordings_inline(meetings: list) -> InlineKeyboardMarkup:
+    buttons = []
+    for m in meetings:
+        topic = (m.get("topic") or "Без темы")[:30]
+        ts = m["created_at"].strftime("%d.%m %H:%M")
+        status_icon = "🔴" if str(m["id"]) in recorder.active_recordings else "🟡"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{status_icon} {ts} [{m['status']}] {topic}",
+                callback_data=f"rec_info:{m['id']}",
+            ),
+            InlineKeyboardButton(
+                text="⏹ Стоп",
+                callback_data=f"rec_stop:{m['id']}",
+            ),
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.message(Command("status"))
 @router.message(F.text == "🎬 Активные записи")
 async def cmd_status(message: Message, state: FSMContext) -> None:
@@ -99,15 +118,36 @@ async def cmd_status(message: Message, state: FSMContext) -> None:
         await message.answer("📭 Активных записей нет.", reply_markup=main_keyboard())
         return
 
-    lines = ["🎬 <b>Активные записи:</b>"]
-    for m in meetings:
-        in_mem = str(m["id"]) in recorder.active_recordings
-        icon = "🔴" if in_mem else "🟡"
-        topic = m.get("topic") or "—"
-        ts = m["created_at"].strftime("%d.%m %H:%M")
-        lines.append(f"{icon} [{m['status']}] {topic} — {ts}")
+    await message.answer(
+        "🎬 <b>Активные записи:</b>",
+        reply_markup=active_recordings_inline(meetings),
+    )
 
-    await message.answer("\n".join(lines), reply_markup=main_keyboard())
+
+@router.callback_query(F.data.startswith("rec_stop:"))
+async def cb_stop_recording(call: CallbackQuery) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    user_id = call.from_user.id
+
+    # Проверяем что встреча принадлежит этому пользователю
+    meeting = await models.get_meeting(meeting_id, user_id)
+    if not meeting:
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+
+    stopped = recorder.stop_recording(meeting_id)
+    if stopped:
+        await call.answer("⏹ Останавливаю запись…")
+        await call.message.edit_text(
+            f"⏹ Запись <code>{meeting_id[:8]}…</code> остановлена вручную."
+        )
+    else:
+        await call.answer("Запись уже завершена или не найдена", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("rec_info:"))
+async def cb_rec_info(call: CallbackQuery) -> None:
+    await call.answer("Запись идёт…")
 
 
 @router.message(Command("history"))
