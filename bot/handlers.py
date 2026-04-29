@@ -129,20 +129,22 @@ async def cb_stop_recording(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
     user_id = call.from_user.id
 
-    # Проверяем что встреча принадлежит этому пользователю
     meeting = await models.get_meeting(meeting_id, user_id)
     if not meeting:
         await call.answer("Встреча не найдена", show_alert=True)
         return
 
-    stopped = recorder.stop_recording(meeting_id)
-    if stopped:
-        await call.answer("⏹ Останавливаю запись…")
-        await call.message.edit_text(
-            f"⏹ Запись <code>{meeting_id[:8]}…</code> остановлена вручную."
-        )
-    else:
-        await call.answer("Запись уже завершена или не найдена", show_alert=True)
+    # Попробовать отменить живую задачу
+    recorder.stop_recording(meeting_id)
+
+    # В любом случае принудительно обновить статус в БД
+    # (задача могла умереть после рестарта контейнера)
+    await models.update_meeting_status(meeting_id, "cancelled")
+    await call.answer("⏹ Запись остановлена")
+    await call.message.edit_text(
+        f"⏹ Запись остановлена вручную.\n"
+        f"<code>{meeting_id[:8]}…</code>"
+    )
 
 
 @router.callback_query(F.data.startswith("rec_info:"))
