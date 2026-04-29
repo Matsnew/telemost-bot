@@ -27,9 +27,17 @@ _NAME_INPUT_SELECTORS = [
 _JOIN_BUTTON_SELECTORS = [
     'button:has-text("Войти")',
     'button:has-text("Присоединиться")',
+    'button:has-text("Вступить")',
+    'button:has-text("Подключиться")',
+    'button:has-text("Продолжить")',
     'button:has-text("Join")',
+    'button:has-text("Enter")',
+    'button[type="submit"]',
     '[data-testid*="join"]',
+    '[data-testid*="enter"]',
     '[class*="join"] button',
+    '[class*="enter"] button',
+    'form button',
 ]
 
 _PARTICIPANT_SELECTORS = [
@@ -132,9 +140,17 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
 
     await name_input.fill("Протоколист")
     logger.info("Name entered")
+    await asyncio.sleep(1)  # ждём появления кнопки
 
-    join_btn = await _find_element(page, _JOIN_BUTTON_SELECTORS, timeout_ms=5_000)
+    join_btn = await _find_element(page, _JOIN_BUTTON_SELECTORS, timeout_ms=10_000)
     if join_btn is None:
+        # последний шанс — скриншот что видим и ошибка
+        if bot and user_id:
+            try:
+                shot = await page.screenshot(full_page=True)
+                await bot.send_photo(user_id, photo=shot, caption="⚠️ Не нашёл кнопку входа")
+            except Exception:
+                pass
         raise RuntimeError("Не найдена кнопка входа")
 
     await join_btn.click()
