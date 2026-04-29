@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 import uvicorn
 from aiogram import Bot, Dispatcher
@@ -44,8 +45,9 @@ async def run_bot() -> None:
 
 
 async def run_api() -> None:
-    logger.info("Starting uvicorn on :8000")
-    cfg = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+    port = int(os.environ.get("PORT", 8000))
+    logger.info("Starting uvicorn on :%d", port)
+    cfg = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
     server = uvicorn.Server(cfg)
     await server.serve()
 
