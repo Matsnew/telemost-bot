@@ -109,21 +109,42 @@ async def save_analysis(
     tags: list[str],
     topic: str,
     participants: list[str],
+    meeting_type: str = "other",
 ) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE meetings
-            SET summary = $1, tags = $2, topic = $3, participants = $4
-            WHERE id = $5
+            SET summary = $1, tags = $2, topic = $3, participants = $4, meeting_type = $5
+            WHERE id = $6
             """,
             summary,
             tags,
             topic,
             participants,
+            meeting_type,
             meeting_id,
         )
+
+
+async def get_existing_tags(user_id: int, limit: int = 20) -> list[str]:
+    """Return the user's most frequently used tags for prompt context."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT unnest(tags) AS tag, COUNT(*) AS cnt
+            FROM meetings
+            WHERE user_id = $1 AND tags IS NOT NULL
+            GROUP BY tag
+            ORDER BY cnt DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+    return [row["tag"] for row in rows]
 
 
 async def save_error(meeting_id: str, error_message: str) -> None:

@@ -22,3 +22,6 @@ CREATE TABLE IF NOT EXISTS meetings (
 CREATE INDEX IF NOT EXISTS idx_meetings_user_id ON meetings(user_id);
 CREATE INDEX IF NOT EXISTS idx_meetings_tags ON meetings USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
+
+-- migrations
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_type TEXT;

@@ -8,54 +8,161 @@ logger = logging.getLogger(__name__)
 
 _client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
-_METADATA_SYSTEM = (
-    "Ты — ассистент для анализа транскриптов встреч. "
+# ── Prompts ────────────────────────────────────────────────────────────────
+
+_TAGGING_SYSTEM = (
+    "Ты — система тегирования рабочих встреч. "
     "Отвечай строго в формате JSON без пояснений."
 )
 
-_METADATA_PROMPT = """\
-Извлеки метаданные из транскрипта встречи. Верни только JSON:
+_TAGGING_PROMPT = """\
+Ты — система тегирования рабочих встреч. Твоя задача — проставить теги,
+которые обеспечат связность базы знаний через все встречи.
+
+СУЩЕСТВУЮЩИЕ ТЕГИ В БАЗЕ (использовать в приоритете если подходят):
+{existing_tags}
+
+ТРАНСКРИПТ ВСТРЕЧИ:
+{transcript}
+
+ПРАВИЛА:
+1. Сначала проверь существующие теги — если встреча касается той же темы,
+   компании, проекта или человека что уже есть в базе, используй ТОЧНО
+   тот же тег (регистр, написание — всё идентично)
+2. Новый тег создавай только если тема действительно новая и её нет в базе
+3. Теги — короткие существительные или словосочетания (1-3 слова)
+4. Названия компаний, продуктов, проектов — всегда тегировать
+5. Имена ключевых участников — тегировать если упоминаются регулярно
+6. Количество тегов: 3-7 на встречу
+
+ФОРМАТ ОТВЕТА — только JSON, никакого текста вокруг:
 {{
-  "tags": ["тег1", "тег2"],
-  "topic": "краткая тема встречи (одно предложение)",
-  "participants": ["имя1", "имя2"]
+  "tags": ["тег1", "тег2", "тег3"],
+  "topic": "одно предложение о чём встреча",
+  "participants": ["имя1", "имя2"],
+  "meeting_type": "тип встречи"
 }}
 
-Правила:
-- tags: 2-5 ключевых тематических тегов на русском, нижний регистр
-- participants: имена, упомянутые в тексте
-- Если участники не упомянуты явно — пустой массив
-
-Транскрипт:
-{transcript}
+Типы встреч (выбрать один):
+- sales — переговоры с клиентом, презентация, коммерческое предложение
+- internal — внутренняя рабочая встреча команды
+- planning — планирование, стратегия, roadmap
+- review — ретроспектива, разбор результатов
+- interview — собеседование, HR
+- partner — встреча с партнёром, интеграция, совместный проект
+- other — не подходит ни одно из выше
 """
 
-_PROTOCOL_SYSTEM = "Ты — ассистент для протоколирования встреч."
+_PROTOCOL_SYSTEM = "Ты — ассистент для протоколирования рабочих встреч."
 
 _PROTOCOL_PROMPT = """\
-Контекст предыдущих встреч по этой теме:
-{previous_summaries}
+Ты — ассистент для протоколирования рабочих встреч.
 
-Текущая встреча:
+ТИП ВСТРЕЧИ: {meeting_type}
+ТЕГИ: {tags}
+УЧАСТНИКИ: {participants}
+
+КОНТЕКСТ ПРЕДЫДУЩИХ ВСТРЕЧ ПО ЭТОЙ ТЕМЕ:
+{previous_summaries}
+(если пусто — предыдущих встреч по теме не было)
+
+ТРАНСКРИПТ:
 {transcript}
 
-Создай структурированный протокол:
-1. Краткое резюме (3-5 предложений)
-2. Ключевые решения
-3. Action items с ответственными
-4. Открытые вопросы
-5. Связь с предыдущими встречами (если есть)
+Составь протокол встречи. Структура зависит от типа:
+
+ЕСЛИ sales:
+## Краткое резюме
+## Клиент и его задача
+## Что предложили / показали
+## Возражения и вопросы клиента
+## Договорённости и следующий шаг
+## Ретроспектива (что изменилось по сравнению с предыдущими встречами по теме)
+
+ЕСЛИ internal:
+## Краткое резюме
+## Обсуждаемые вопросы
+## Принятые решения
+## Action items (формат: [Ответственный] — [задача] — [срок если упоминался])
+## Открытые вопросы
+
+ЕСЛИ planning:
+## Краткое резюме
+## Цели и контекст
+## Рассмотренные варианты
+## Принятые решения и обоснование
+## План действий
+## Риски и зависимости
+## Ретроспектива (как это соотносится с предыдущими планами по теме)
+
+ЕСЛИ review:
+## Краткое резюме
+## Что оценивали
+## Результаты и выводы
+## Что сработало / что нет
+## Action items
+## Ретроспектива (динамика по сравнению с предыдущими встречами)
+
+ЕСЛИ partner:
+## Краткое резюме
+## Партнёр и контекст сотрудничества
+## Обсуждаемые возможности
+## Договорённости
+## Следующие шаги с обеих сторон
+## Ретроспектива
+
+ЕСЛИ interview:
+## Краткое резюме
+## Кандидат / собеседуемый
+## Ключевые моменты
+## Оценка
+## Решение или следующий шаг
+
+ЕСЛИ other:
+## Краткое резюме
+## Ключевые темы
+## Решения и договорённости
+## Action items
+
+ВАЖНО:
+- Раздел "Ретроспектива" заполнять только если есть реальная связь
+  с предыдущими встречами. Если связи нет — раздел не включать.
+- Action items писать конкретно: кто, что, когда.
+- Если имена участников неизвестны — писать "не установлен".
+- Отвечать только текстом протокола, без вводных фраз.
 """
 
+_ASK_PROMPT = """\
+У тебя есть база протоколов встреч пользователя.
+Ответь на вопрос опираясь только на эти данные.
+Если информации нет — так и скажи.
 
-async def _extract_metadata(transcript: str) -> tuple[list[str], str, list[str]]:
+База встреч:
+{base_text}
+
+Вопрос: {question}
+"""
+
+# ── Internal helpers ───────────────────────────────────────────────────────
+
+
+async def _extract_metadata(
+    transcript: str, existing_tags: list[str]
+) -> tuple[list[str], str, list[str], str]:
+    tags_str = ", ".join(existing_tags) if existing_tags else "тегов пока нет"
     response = await _client.chat.completions.create(
         model=config.OPENAI_MODEL,
         max_tokens=512,
         response_format={"type": "json_object"},
         messages=[
-            {"role": "system", "content": _METADATA_SYSTEM},
-            {"role": "user", "content": _METADATA_PROMPT.format(transcript=transcript[:8000])},
+            {"role": "system", "content": _TAGGING_SYSTEM},
+            {
+                "role": "user",
+                "content": _TAGGING_PROMPT.format(
+                    existing_tags=tags_str,
+                    transcript=transcript[:8000],
+                ),
+            },
         ],
     )
     data = json.loads(response.choices[0].message.content)
@@ -63,10 +170,17 @@ async def _extract_metadata(transcript: str) -> tuple[list[str], str, list[str]]
         data.get("tags", []),
         data.get("topic", "Без темы"),
         data.get("participants", []),
+        data.get("meeting_type", "other"),
     )
 
 
-async def _build_protocol(transcript: str, previous_meetings: list[dict]) -> str:
+async def _build_protocol(
+    transcript: str,
+    meeting_type: str,
+    tags: list[str],
+    participants: list[str],
+    previous_meetings: list[dict],
+) -> str:
     if previous_meetings:
         prev_text = "\n\n---\n\n".join(
             f"Встреча от {m['created_at'].strftime('%d.%m.%Y')}"
@@ -74,7 +188,7 @@ async def _build_protocol(transcript: str, previous_meetings: list[dict]) -> str
             for m in previous_meetings
         )
     else:
-        prev_text = "Нет предыдущих встреч по этой теме."
+        prev_text = ""
 
     response = await _client.chat.completions.create(
         model=config.OPENAI_MODEL,
@@ -84,7 +198,10 @@ async def _build_protocol(transcript: str, previous_meetings: list[dict]) -> str
             {
                 "role": "user",
                 "content": _PROTOCOL_PROMPT.format(
-                    previous_summaries=prev_text,
+                    meeting_type=meeting_type,
+                    tags=", ".join(tags) if tags else "—",
+                    participants=", ".join(participants) if participants else "не установлены",
+                    previous_summaries=prev_text or "Предыдущих встреч по теме не было.",
                     transcript=transcript[:12000],
                 ),
             },
@@ -93,19 +210,23 @@ async def _build_protocol(transcript: str, previous_meetings: list[dict]) -> str
     return response.choices[0].message.content.strip()
 
 
+# ── Public API ─────────────────────────────────────────────────────────────
+
+
 async def analyze_meeting(
     meeting_id: str, user_id: int, transcript: str
-) -> tuple[str, list[str], str, list[str]]:
-    """Returns (summary, tags, topic, participants)."""
-    tags, topic, participants = await _extract_metadata(transcript)
-    logger.info("Metadata extracted: topic=%r tags=%r", topic, tags)
+) -> tuple[str, list[str], str, list[str], str]:
+    """Returns (summary, tags, topic, participants, meeting_type)."""
+    existing_tags = await models.get_existing_tags(user_id)
+    tags, topic, participants, meeting_type = await _extract_metadata(transcript, existing_tags)
+    logger.info("Metadata: topic=%r type=%r tags=%r", topic, meeting_type, tags)
 
     previous = await models.get_recent_meetings_by_tags(
         user_id, tags, exclude_id=meeting_id, limit=config.CONTEXT_MEETINGS_LIMIT
     )
 
-    summary = await _build_protocol(transcript, previous)
-    return summary, tags, topic, participants
+    summary = await _build_protocol(transcript, meeting_type, tags, participants, previous)
+    return summary, tags, topic, participants, meeting_type
 
 
 async def answer_question(user_id: int, question: str) -> str:
@@ -120,17 +241,9 @@ async def answer_question(user_id: int, question: str) -> str:
         for m in summaries
     )
 
-    prompt = (
-        "У тебя есть база протоколов встреч пользователя.\n"
-        "Ответь на вопрос опираясь только на эти данные.\n"
-        "Если информации нет — так и скажи.\n\n"
-        f"База встреч:\n{base_text}\n\n"
-        f"Вопрос: {question}"
-    )
-
     response = await _client.chat.completions.create(
         model=config.OPENAI_MODEL,
         max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": _ASK_PROMPT.format(base_text=base_text, question=question)}],
     )
     return response.choices[0].message.content.strip()

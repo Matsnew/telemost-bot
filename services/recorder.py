@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from aiogram import Bot
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from config import config
@@ -363,19 +363,25 @@ async def _recording_pipeline(
         await models.update_meeting_status(meeting_id, "analyzing")
         await bot.send_message(user_id, "🤖 Анализирую встречу…")
 
-        summary, tags, topic, participants = await analyze_meeting(
+        summary, tags, topic, participants, meeting_type = await analyze_meeting(
             meeting_id, user_id, transcript
         )
-        await models.save_analysis(meeting_id, summary, tags, topic, participants)
+        await models.save_analysis(meeting_id, summary, tags, topic, participants, meeting_type)
         await models.update_meeting_status(meeting_id, "done")
 
         # ── Send result ────────────────────────────────────────────────
         tags_str = ", ".join(f"#{t}" for t in tags) if tags else "—"
         participants_str = ", ".join(participants) if participants else "—"
+        type_icons = {
+            "sales": "🤝", "internal": "🏠", "planning": "📅",
+            "review": "🔍", "interview": "👤", "partner": "🤝", "other": "📌",
+        }
+        type_icon = type_icons.get(meeting_type, "📌")
 
         header = (
             f"✅ <b>Встреча записана</b>\n\n"
             f"📋 <b>Тема:</b> {topic}\n"
+            f"{type_icon} <b>Тип:</b> {meeting_type}\n"
             f"🏷 <b>Теги:</b> {tags_str}\n"
             f"👥 <b>Участники:</b> {participants_str}\n\n"
             f"📄 <b>Протокол:</b>\n"
@@ -389,6 +395,17 @@ async def _recording_pipeline(
             await bot.send_message(user_id, header)
             for chunk_start in range(0, len(summary), 4000):
                 await bot.send_message(user_id, summary[chunk_start:chunk_start + 4000])
+
+        # ── Action buttons ─────────────────────────────────────────────
+        has_audio = os.path.exists(audio_path)
+        row = [InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}")]
+        if has_audio:
+            row.append(InlineKeyboardButton(text="🎵 Аудио", callback_data=f"audio:{meeting_id}"))
+        await bot.send_message(
+            user_id,
+            "⬆️ Нажми чтобы получить транскрипт или аудио:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]),
+        )
 
     except asyncio.CancelledError:
         logger.info("Recording %s cancelled by user", meeting_id)
