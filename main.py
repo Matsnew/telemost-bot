@@ -4,6 +4,7 @@ import os
 
 import uvicorn
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from fastapi import FastAPI
@@ -34,7 +35,7 @@ bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
 )
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 dp.include_router(router)
 dp.message.middleware(AllowedUsersMiddleware())
 
