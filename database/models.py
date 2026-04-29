@@ -62,6 +62,16 @@ async def get_meeting(meeting_id: str, user_id: int) -> dict[str, Any] | None:
     return result
 
 
+async def meeting_belongs_to_user(meeting_id: str, user_id: int) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM meetings WHERE id = $1 AND user_id = $2",
+            meeting_id, user_id,
+        )
+    return row is not None
+
+
 async def update_meeting_status(meeting_id: str, status: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:
