@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 from config import config
@@ -126,7 +127,7 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
             screenshot = await page.screenshot(full_page=True)
             await bot.send_photo(
                 user_id,
-                photo=screenshot,
+                photo=BufferedInputFile(screenshot, filename="debug.png"),
                 caption=f"🔍 Отладка: страница встречи\nTitle: {await page.title()}\nURL: {page.url}",
             )
         except Exception as e:
@@ -148,7 +149,7 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
         if bot and user_id:
             try:
                 shot = await page.screenshot(full_page=True)
-                await bot.send_photo(user_id, photo=shot, caption="⚠️ Не нашёл кнопку входа")
+                await bot.send_photo(user_id, photo=BufferedInputFile(shot, filename="debug.png"), caption="⚠️ Не нашёл кнопку входа")
             except Exception:
                 pass
         raise RuntimeError("Не найдена кнопка входа")
