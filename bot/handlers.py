@@ -168,14 +168,15 @@ async def cmd_history(message: Message, state: FSMContext) -> None:
     )
 
 
-def meeting_detail_inline(meeting_id: str, has_transcript: bool) -> InlineKeyboardMarkup:
-    buttons = [[
-        InlineKeyboardButton(text="📄 Протокол", callback_data=f"summary:{meeting_id}"),
-    ]]
+def meeting_detail_inline(meeting_id: str, has_transcript: bool, has_audio: bool) -> InlineKeyboardMarkup:
+    row1 = [InlineKeyboardButton(text="📄 Протокол", callback_data=f"summary:{meeting_id}")]
     if has_transcript:
-        buttons[0].append(
-            InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}")
-        )
+        row1.append(InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}"))
+    buttons = [row1]
+    if has_audio:
+        buttons.append([
+            InlineKeyboardButton(text="🎵 Скачать аудио", callback_data=f"audio:{meeting_id}")
+        ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -212,11 +213,41 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
         f"👥 {participants_str}"
     )
 
+    import os as _os
+    audio_path = f"/tmp/{meeting_id}.wav"
+    has_audio = _os.path.exists(audio_path)
+
     await call.answer()
     await call.message.answer(
         text,
-        reply_markup=meeting_detail_inline(meeting_id, bool(meeting.get("transcript")))
+        reply_markup=meeting_detail_inline(meeting_id, bool(meeting.get("transcript")), has_audio)
     )
+
+
+@router.callback_query(F.data.startswith("audio:"))
+async def cb_meeting_audio(call: CallbackQuery) -> None:
+    import os as _os
+    from aiogram.types import FSInputFile
+    meeting_id = call.data.split(":", 1)[1]
+
+    if not await models.meeting_belongs_to_user(meeting_id, call.from_user.id):
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+
+    audio_path = f"/tmp/{meeting_id}.wav"
+    if not _os.path.exists(audio_path):
+        await call.answer("Аудиофайл не найден (удалён или ещё не записан)", show_alert=True)
+        return
+
+    size_mb = _os.path.getsize(audio_path) / 1024 / 1024
+    await call.answer(f"Отправляю аудио ({size_mb:.1f} МБ)…")
+    try:
+        await call.message.answer_audio(
+            FSInputFile(audio_path, filename=f"meeting_{meeting_id[:8]}.wav"),
+            caption=f"🎵 Аудио встречи\n{size_mb:.1f} МБ",
+        )
+    except Exception as exc:
+        await call.message.answer(f"❌ Не удалось отправить аудио: {exc}\n\nФайл: <code>{audio_path}</code>")
 
 
 @router.callback_query(F.data.startswith("summary:"))
