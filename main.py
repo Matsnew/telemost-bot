@@ -13,7 +13,6 @@ from config import config
 from database.connection import close_db, init_db
 from bot.handlers import router
 from bot.middlewares import AllowedUsersMiddleware
-from services.transcriber import init_transcriber
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── FastAPI (health / webhooks in the future) ──────────────────────────────
 app = FastAPI(title="Telemost Bot", docs_url=None, redoc_url=None)
 
 
@@ -30,7 +28,6 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-# ── aiogram ────────────────────────────────────────────────────────────────
 bot = Bot(
     token=config.TELEGRAM_BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -56,11 +53,6 @@ async def run_api() -> None:
 async def main() -> None:
     logger.info("Initialising database …")
     await init_db()
-
-    logger.info("Loading Whisper model …")
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, init_transcriber)
-
     logger.info("Service ready.")
     try:
         await asyncio.gather(run_bot(), run_api())
