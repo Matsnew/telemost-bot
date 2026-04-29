@@ -205,7 +205,12 @@ async def _recording_pipeline(
         await bot.send_message(user_id, "✅ Вхожу на встречу и начинаю запись…")
 
         async with async_playwright() as p:
+            chromium_path = (
+                os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+                or "/usr/bin/chromium"
+            )
             browser = await p.chromium.launch(
+                executable_path=chromium_path,
                 headless=True,
                 args=[
                     "--no-sandbox",
