@@ -168,6 +168,17 @@ async def cmd_history(message: Message, state: FSMContext) -> None:
     )
 
 
+def meeting_detail_inline(meeting_id: str, has_transcript: bool) -> InlineKeyboardMarkup:
+    buttons = [[
+        InlineKeyboardButton(text="📄 Протокол", callback_data=f"summary:{meeting_id}"),
+    ]]
+    if has_transcript:
+        buttons[0].append(
+            InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}")
+        )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 @router.callback_query(F.data.startswith("meeting:"))
 async def cb_meeting_detail(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
@@ -182,7 +193,6 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
     topic = meeting.get("topic") or "Без темы"
     tags = meeting.get("tags") or []
     participants = meeting.get("participants") or []
-    summary = meeting.get("summary") or "Протокол ещё не готов."
     status = meeting.get("status", "—")
 
     tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
@@ -191,18 +201,42 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
 
     text = (
         f"{status_icon} <b>{topic}</b>\n"
-        f"📅 {ts}\n"
+        f"📅 {ts} МСК\n"
         f"🏷 {tags_str}\n"
-        f"👥 {participants_str}\n\n"
-        f"📄 <b>Протокол:</b>\n{summary}"
+        f"👥 {participants_str}"
     )
 
     await call.answer()
-    if len(text) <= 4000:
-        await call.message.answer(text)
-    else:
-        await call.message.answer(text[:4000])
-        await call.message.answer(text[4000:])
+    await call.message.answer(
+        text,
+        reply_markup=meeting_detail_inline(meeting_id, bool(meeting.get("transcript")))
+    )
+
+
+@router.callback_query(F.data.startswith("summary:"))
+async def cb_meeting_summary(call: CallbackQuery) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    meeting = await models.get_meeting(meeting_id, call.from_user.id)
+    if not meeting:
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+    summary = meeting.get("summary") or "Протокол ещё не готов."
+    await call.answer()
+    for i in range(0, len(summary), 4000):
+        await call.message.answer(f"📄 <b>Протокол:</b>\n{summary[i:i+4000]}")
+
+
+@router.callback_query(F.data.startswith("transcript:"))
+async def cb_meeting_transcript(call: CallbackQuery) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    meeting = await models.get_meeting(meeting_id, call.from_user.id)
+    if not meeting:
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+    transcript = meeting.get("transcript") or "Транскрипт недоступен."
+    await call.answer()
+    for i in range(0, len(transcript), 4000):
+        await call.message.answer(f"📝 <b>Транскрипт:</b>\n{transcript[i:i+4000]}")
 
 
 @router.message(Command("ask"))
@@ -243,9 +277,15 @@ async def cmd_ask_answer(message: Message, state: FSMContext) -> None:
         await thinking.delete()
         await message.answer(f"💬 {answer}", reply_markup=main_keyboard())
     except Exception as exc:
-        logger.exception("Error in ask for user %d", user_id)
-        await thinking.delete()
-        await message.answer(f"❌ Ошибка: {exc}", reply_markup=main_keyboard())
+        logger.exception("Error in ask for user %d: %s", user_id, exc)
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
+        await message.answer(
+            f"❌ Ошибка при обращении к OpenAI:\n<code>{str(exc)[:300]}</code>",
+            reply_markup=main_keyboard()
+        )
 
 
 @router.message()

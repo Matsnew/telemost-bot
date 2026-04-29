@@ -159,13 +159,23 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
             f"Не найдено поле ввода имени. Title: {await page.title()} URL: {page.url}"
         )
 
-    await name_input.fill("Протоколист")
+    await name_input.fill("Protocaller")
     logger.info("Name entered")
-    await asyncio.sleep(1)  # ждём появления кнопки
+    await asyncio.sleep(1)
+
+    # Отключить микрофон и камеру на экране предпросмотра (ДО входа)
+    for selectors, name in [(_MUTE_BUTTON_SELECTORS, "mic"), (_CAMERA_OFF_SELECTORS, "camera")]:
+        btn = await _find_element(page, selectors, timeout_ms=2000)
+        if btn:
+            try:
+                await btn.click()
+                logger.info("Clicked %s off on pre-join screen", name)
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
 
     join_btn = await _find_element(page, _JOIN_BUTTON_SELECTORS, timeout_ms=10_000)
     if join_btn is None:
-        # последний шанс — скриншот что видим и ошибка
         if bot and user_id:
             try:
                 shot = await page.screenshot(full_page=True)
@@ -180,16 +190,6 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
     # Wait for meeting room to initialise
     await asyncio.sleep(8)
     logger.info("In meeting room")
-
-    # Отключить микрофон и камеру
-    for selectors, name in [(_MUTE_BUTTON_SELECTORS, "mic"), (_CAMERA_OFF_SELECTORS, "camera")]:
-        btn = await _find_element(page, selectors, timeout_ms=2000)
-        if btn:
-            try:
-                await btn.click()
-                logger.info("Clicked %s off button", name)
-            except Exception:
-                pass
 
 
 async def _count_participants(page) -> int:
