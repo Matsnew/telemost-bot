@@ -52,6 +52,8 @@ _PARTICIPANT_SELECTORS = [
 ]
 
 _PARTICIPANT_NAME_SELECTORS = [
+    'span[class*="TextName"][title]',
+    'span[title][class*="Name"]',
     '[class*="participant-item"] [class*="name"]',
     '[class*="participant-item"] [class*="title"]',
     '[class*="attendee"] [class*="name"]',
@@ -221,7 +223,9 @@ async def _get_participant_names(page) -> list[str]:
         try:
             elements = await page.locator(selector).all()
             for el in elements:
-                text = (await el.inner_text()).strip()
+                # Prefer title attribute (stable), fall back to text content
+                title = await el.get_attribute("title")
+                text = (title or await el.inner_text()).strip()
                 if text and text != "Protocaller" and 1 < len(text) < 100:
                     names.add(text)
         except Exception:
