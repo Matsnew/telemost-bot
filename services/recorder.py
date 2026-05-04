@@ -51,6 +51,22 @@ _PARTICIPANT_SELECTORS = [
     '[class*="members"] [class*="item"]',
 ]
 
+_PARTICIPANT_NAME_SELECTORS = [
+    '[class*="participant-item"] [class*="name"]',
+    '[class*="participant-item"] [class*="title"]',
+    '[class*="attendee"] [class*="name"]',
+    '[class*="video-tile"] [class*="name"]',
+    '[class*="video-tile"] [class*="label"]',
+    '[class*="roster-item"] [class*="name"]',
+    '[class*="MemberList"] [class*="name"]',
+    '[class*="members"] [class*="name"]',
+    '[data-testid*="participant-name"]',
+    '[class*="participant"] [class*="name"]',
+    '[class*="UserName"]',
+    '[class*="userName"]',
+    '[class*="user-name"]',
+]
+
 _MUTE_BUTTON_SELECTORS = [
     'button[aria-label*="микрофон" i]',
     'button[aria-label*="mute" i]',
@@ -198,6 +214,21 @@ async def _join_meeting(page, meeting_url: str, bot=None, user_id: int = 0) -> N
     logger.info("In meeting room")
 
 
+async def _get_participant_names(page) -> list[str]:
+    """Extract participant display names from Telemost UI."""
+    names: set[str] = set()
+    for selector in _PARTICIPANT_NAME_SELECTORS:
+        try:
+            elements = await page.locator(selector).all()
+            for el in elements:
+                text = (await el.inner_text()).strip()
+                if text and text != "Protocaller" and 1 < len(text) < 100:
+                    names.add(text)
+        except Exception:
+            continue
+    return list(names)
+
+
 async def _count_participants(page) -> int:
     # Check if meeting ended
     for sel in _MEETING_ENDED_SELECTORS:
@@ -217,12 +248,18 @@ async def _count_participants(page) -> int:
     return -1  # Unknown — assume still going
 
 
-async def _wait_for_meeting_end(page) -> None:
-    """Poll every 30 s for reliable meeting-end signals."""
+async def _wait_for_meeting_end(page, participants: set[str]) -> None:
+    """Poll every 30 s for reliable meeting-end signals, collecting participant names along the way."""
     initial_url = page.url
 
     while True:
         await asyncio.sleep(config.PARTICIPANT_POLL_INTERVAL)
+
+        # Collect participant names on each poll
+        new_names = await _get_participant_names(page)
+        if new_names:
+            participants.update(new_names)
+            logger.info("Participants so far: %s", participants)
 
         # 1. URL изменился — Телемост перенаправил после завершения
         if page.url != initial_url:
@@ -337,10 +374,15 @@ async def _recording_pipeline(
             except Exception as e:
                 logger.warning("Failed to send join screenshot: %s", e)
 
+            # Collect initial participant names after join settles
+            await asyncio.sleep(5)
+            scraped_participants: set[str] = set(await _get_participant_names(page))
+            logger.info("Initial participants: %s", scraped_participants)
+
             audio_proc = await _start_audio_capture(audio_path, sink_name)
 
             await asyncio.wait_for(
-                _wait_for_meeting_end(page),
+                _wait_for_meeting_end(page, scraped_participants),
                 timeout=config.MAX_RECORDING_DURATION,
             )
 
@@ -364,7 +406,7 @@ async def _recording_pipeline(
         await bot.send_message(user_id, "🤖 Анализирую встречу…")
 
         summary, tags, topic, participants, meeting_type = await analyze_meeting(
-            meeting_id, user_id, transcript
+            meeting_id, user_id, transcript, list(scraped_participants)
         )
         await models.save_analysis(meeting_id, summary, tags, topic, participants, meeting_type)
         await models.update_meeting_status(meeting_id, "done")

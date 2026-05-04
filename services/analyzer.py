@@ -35,6 +35,8 @@ _TAGGING_PROMPT = """\
 5. Имена ключевых участников — тегировать если упоминаются регулярно
 6. Количество тегов: 3-7 на встречу
 
+{participants_hint}
+
 ФОРМАТ ОТВЕТА — только JSON, никакого текста вокруг:
 {{
   "tags": ["тег1", "тег2", "тег3"],
@@ -147,9 +149,21 @@ _ASK_PROMPT = """\
 
 
 async def _extract_metadata(
-    transcript: str, existing_tags: list[str]
+    transcript: str, existing_tags: list[str], scraped_participants: list[str] = []
 ) -> tuple[list[str], str, list[str], str]:
     tags_str = ", ".join(existing_tags) if existing_tags else "тегов пока нет"
+
+    if scraped_participants:
+        participants_hint = (
+            "УЧАСТНИКИ ВСТРЕЧИ (извлечены из интерфейса Телемоста, использовать точно как есть, не менять):\n"
+            + ", ".join(scraped_participants)
+        )
+    else:
+        participants_hint = (
+            "УЧАСТНИКИ: определи из транскрипта только если имена звучали явно. "
+            "Если имена не были названы — верни пустой список []."
+        )
+
     response = await _client.chat.completions.create(
         model=config.OPENAI_MODEL,
         max_tokens=512,
@@ -161,15 +175,18 @@ async def _extract_metadata(
                 "content": _TAGGING_PROMPT.format(
                     existing_tags=tags_str,
                     transcript=transcript[:8000],
+                    participants_hint=participants_hint,
                 ),
             },
         ],
     )
     data = json.loads(response.choices[0].message.content)
+    # Prefer scraped names over GPT's guess
+    participants = scraped_participants if scraped_participants else data.get("participants", [])
     return (
         data.get("tags", []),
         data.get("topic", "Без темы"),
-        data.get("participants", []),
+        participants,
         data.get("meeting_type", "other"),
     )
 
@@ -214,11 +231,13 @@ async def _build_protocol(
 
 
 async def analyze_meeting(
-    meeting_id: str, user_id: int, transcript: str
+    meeting_id: str, user_id: int, transcript: str, scraped_participants: list[str] | None = None
 ) -> tuple[str, list[str], str, list[str], str]:
     """Returns (summary, tags, topic, participants, meeting_type)."""
     existing_tags = await models.get_existing_tags(user_id)
-    tags, topic, participants, meeting_type = await _extract_metadata(transcript, existing_tags)
+    tags, topic, participants, meeting_type = await _extract_metadata(
+        transcript, existing_tags, scraped_participants or []
+    )
     logger.info("Metadata: topic=%r type=%r tags=%r", topic, meeting_type, tags)
 
     previous = await models.get_recent_meetings_by_tags(
