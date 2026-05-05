@@ -227,6 +227,7 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("audio:"))
 async def cb_meeting_audio(call: CallbackQuery) -> None:
     import os as _os
+    import asyncio as _asyncio
     from aiogram.types import FSInputFile
     meeting_id = call.data.split(":", 1)[1]
 
@@ -239,15 +240,31 @@ async def cb_meeting_audio(call: CallbackQuery) -> None:
         await call.answer("Аудиофайл не найден (удалён или ещё не записан)", show_alert=True)
         return
 
-    size_mb = _os.path.getsize(audio_path) / 1024 / 1024
-    await call.answer(f"Отправляю аудио ({size_mb:.1f} МБ)…")
+    mp3_path = f"/tmp/{meeting_id}.mp3"
+    if not _os.path.exists(mp3_path):
+        await call.answer("Конвертирую аудио, подождите…")
+        proc = await _asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", audio_path,
+            "-codec:a", "libmp3lame", "-qscale:a", "5",
+            mp3_path,
+            stdout=_asyncio.subprocess.DEVNULL,
+            stderr=_asyncio.subprocess.DEVNULL,
+        )
+        await proc.communicate()
+        if proc.returncode != 0 or not _os.path.exists(mp3_path):
+            await call.message.answer("❌ Не удалось конвертировать аудио в MP3.")
+            return
+    else:
+        await call.answer("Отправляю аудио…")
+
+    size_mb = _os.path.getsize(mp3_path) / 1024 / 1024
     try:
         await call.message.answer_document(
-            FSInputFile(audio_path, filename=f"meeting_{meeting_id[:8]}.wav"),
+            FSInputFile(mp3_path, filename=f"meeting_{meeting_id[:8]}.mp3"),
             caption=f"🎵 Аудио встречи · {size_mb:.1f} МБ",
         )
     except Exception as exc:
-        await call.message.answer(f"❌ Не удалось отправить аудио: {exc}\n\nФайл: <code>{audio_path}</code>")
+        await call.message.answer(f"❌ Не удалось отправить аудио: {exc}")
 
 
 @router.callback_query(F.data.startswith("summary:"))
