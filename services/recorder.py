@@ -7,7 +7,8 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 from config import config
 from database import models
-from services.transcriber import transcribe_audio
+import time
+from services.transcriber import transcribe_audio, format_transcript
 from services.analyzer import analyze_meeting
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ _PARTICIPANT_SELECTORS = [
     '[class*="MemberList"] [class*="item"]',
     '[class*="members"] [class*="item"]',
 ]
+
+_ACTIVE_SPEAKER_SELECTOR = 'div[class*="rootStroke"] span[class*="TextName"][title]'
 
 _PARTICIPANT_NAME_SELECTORS = [
     'span[class*="TextName"][title]',
@@ -233,6 +236,39 @@ async def _get_participant_names(page) -> list[str]:
     return list(names)
 
 
+async def _get_active_speaker(page) -> str:
+    """Return the name of the currently speaking participant, or empty string."""
+    try:
+        el = page.locator(_ACTIVE_SPEAKER_SELECTOR).first
+        title = await el.get_attribute("title", timeout=500)
+        if title and title != "Protocaller":
+            return title.strip()
+    except Exception:
+        pass
+    return ""
+
+
+async def _track_speakers(
+    page,
+    timeline: list[tuple[float, str]],
+    audio_start_monotonic: float,
+    stop_event: asyncio.Event,
+) -> None:
+    """Poll active speaker every second and record changes to timeline."""
+    last_speaker = ""
+    while not stop_event.is_set():
+        try:
+            speaker = await _get_active_speaker(page)
+            if speaker and speaker != last_speaker:
+                elapsed = time.monotonic() - audio_start_monotonic
+                timeline.append((elapsed, speaker))
+                last_speaker = speaker
+                logger.info("Speaker at %.1fs: %s", elapsed, speaker)
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+
+
 async def _count_participants(page) -> int:
     # Check if meeting ended
     for sel in _MEETING_ENDED_SELECTORS:
@@ -362,7 +398,7 @@ async def _recording_pipeline(
             await _join_meeting(page, meeting_url, bot=bot, user_id=user_id)
 
             # ── Подтверждение входа со скриншотом ─────────────────────
-            from utils.time import now_msk
+            from utils.time import now_msk  # noqa: PLC0415
             joined_at = now_msk().strftime("%d.%m.%Y %H:%M:%S МСК")
             try:
                 screenshot = await page.screenshot(full_page=False)
@@ -383,12 +419,30 @@ async def _recording_pipeline(
             scraped_participants: set[str] = set(await _get_participant_names(page))
             logger.info("Initial participants: %s", scraped_participants)
 
+            speaker_timeline: list[tuple[float, str]] = []
+            stop_tracking = asyncio.Event()
+            audio_start_monotonic = time.monotonic()
+            recording_start_msk = now_msk()
+
             audio_proc = await _start_audio_capture(audio_path, sink_name)
 
-            await asyncio.wait_for(
-                _wait_for_meeting_end(page, scraped_participants),
-                timeout=config.MAX_RECORDING_DURATION,
+            tracking_task = asyncio.create_task(
+                _track_speakers(page, speaker_timeline, audio_start_monotonic, stop_tracking)
             )
+            try:
+                await asyncio.wait_for(
+                    _wait_for_meeting_end(page, scraped_participants),
+                    timeout=config.MAX_RECORDING_DURATION,
+                )
+            finally:
+                stop_tracking.set()
+                tracking_task.cancel()
+                try:
+                    await tracking_task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info("Speaker timeline (%d events): %s", len(speaker_timeline), speaker_timeline)
 
         # Stop audio capture
         if audio_proc and audio_proc.returncode is None:
@@ -399,7 +453,8 @@ async def _recording_pipeline(
         await models.update_meeting_status(meeting_id, "transcribing")
         await bot.send_message(user_id, "🎙 Транскрибирую запись…")
 
-        transcript = await transcribe_audio(audio_path)
+        segments = await transcribe_audio(audio_path)
+        transcript = format_transcript(segments, speaker_timeline, recording_start_msk)
         # Аудиофайл НЕ удаляем — оставляем для отладки
         logger.info("Audio file kept at: %s", audio_path)
 
