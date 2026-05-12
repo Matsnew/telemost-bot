@@ -38,7 +38,7 @@ class Config:
     ASK_RATE_LIMIT: int = 10  # requests per minute
 
     # System
-    AUDIO_DIR: str = "/tmp"
+    AUDIO_DIR: str = "/audio"
     DISPLAY: str = ":99"
 
 
