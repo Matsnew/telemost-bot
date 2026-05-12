@@ -350,6 +350,81 @@ async def cmd_ask_answer(message: Message, state: FSMContext) -> None:
         )
 
 
+@router.message(Command("reprocess"))
+async def cmd_reprocess(message: Message, bot: Bot) -> None:
+    """Временная команда: /reprocess <meeting_id> — повторно обработать запись."""
+    import os as _os
+    from services.transcriber import transcribe_audio, format_transcript
+    from services.analyzer import analyze_meeting
+    from utils.time import now_msk
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Использование: /reprocess <meeting_id>")
+        return
+
+    meeting_id = args[1].strip()
+    user_id = message.from_user.id
+
+    if not await models.meeting_belongs_to_user(meeting_id, user_id):
+        await message.answer("❌ Встреча не найдена.")
+        return
+
+    audio_path = _os.path.join("/audio", f"{meeting_id}.wav")
+    if not _os.path.exists(audio_path):
+        # fallback to /tmp
+        audio_path = f"/tmp/{meeting_id}.wav"
+    if not _os.path.exists(audio_path):
+        await message.answer(f"❌ Аудиофайл не найден:\n<code>{audio_path}</code>")
+        return
+
+    await message.answer("🎙 Транскрибирую запись…")
+    try:
+        segments = await transcribe_audio(audio_path)
+        transcript = format_transcript(segments, [], now_msk())
+        await models.save_transcript(meeting_id, transcript)
+
+        await message.answer("🤖 Анализирую встречу…")
+        summary, tags, topic, participants, meeting_type = await analyze_meeting(
+            meeting_id, user_id, transcript, []
+        )
+        await models.save_analysis(meeting_id, summary, tags, topic, participants, meeting_type)
+        await models.update_meeting_status(meeting_id, "done")
+
+        tags_str = ", ".join(f"#{t}" for t in tags) if tags else "—"
+        participants_str = ", ".join(participants) if participants else "—"
+        type_icons = {
+            "sales": "🤝", "internal": "🏠", "planning": "📅",
+            "review": "🔍", "interview": "👤", "partner": "🤝", "other": "📌",
+        }
+        header = (
+            f"✅ <b>Встреча обработана</b>\n\n"
+            f"📋 <b>Тема:</b> {topic}\n"
+            f"{type_icons.get(meeting_type, '📌')} <b>Тип:</b> {meeting_type}\n"
+            f"🏷 <b>Теги:</b> {tags_str}\n"
+            f"👥 <b>Участники:</b> {participants_str}\n\n"
+            f"📄 <b>Протокол:</b>\n"
+        )
+        full_msg = header + summary
+        if len(full_msg) <= 4000:
+            await message.answer(full_msg)
+        else:
+            await message.answer(header)
+            for chunk_start in range(0, len(summary), 4000):
+                await message.answer(summary[chunk_start:chunk_start + 4000])
+
+        row = [InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}")]
+        if _os.path.exists(audio_path):
+            row.append(InlineKeyboardButton(text="🎵 Аудио", callback_data=f"audio:{meeting_id}"))
+        await message.answer(
+            "⬆️ Нажми чтобы получить транскрипт или аудио:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]),
+        )
+    except Exception as exc:
+        logger.exception("Reprocess error for %s", meeting_id)
+        await message.answer(f"❌ Ошибка: <code>{str(exc)[:500]}</code>")
+
+
 @router.message()
 async def handle_message(message: Message, bot: Bot, state: FSMContext) -> None:
     if not message.text:
