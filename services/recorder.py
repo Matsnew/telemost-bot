@@ -346,12 +346,16 @@ async def _handle_error(
 async def _recording_pipeline(
     meeting_id: str, user_id: int, meeting_url: str, bot: Bot
 ) -> None:
+    from utils.time import now_msk
     audio_path = os.path.join(config.AUDIO_DIR, f"{meeting_id}.wav")
     sink_name = f"sink_{meeting_id.replace('-', '')[:16]}"
     module_index: int | None = None
     audio_proc: asyncio.subprocess.Process | None = None
     browser = None
     context = None
+    speaker_timeline: list[tuple[float, str]] = []
+    recording_start_msk = now_msk()
+    scraped_participants: set[str] = set()
 
     try:
         module_index = await _create_pulse_sink(sink_name)
@@ -398,7 +402,6 @@ async def _recording_pipeline(
             await _join_meeting(page, meeting_url, bot=bot, user_id=user_id)
 
             # ── Подтверждение входа со скриншотом ─────────────────────
-            from utils.time import now_msk  # noqa: PLC0415
             joined_at = now_msk().strftime("%d.%m.%Y %H:%M:%S МСК")
             try:
                 screenshot = await page.screenshot(full_page=False)
@@ -416,10 +419,9 @@ async def _recording_pipeline(
 
             # Collect initial participant names after join settles
             await asyncio.sleep(5)
-            scraped_participants: set[str] = set(await _get_participant_names(page))
+            scraped_participants.update(await _get_participant_names(page))
             logger.info("Initial participants: %s", scraped_participants)
 
-            speaker_timeline: list[tuple[float, str]] = []
             stop_tracking = asyncio.Event()
             audio_start_monotonic = time.monotonic()
             recording_start_msk = now_msk()
@@ -510,12 +512,70 @@ async def _recording_pipeline(
 
     except asyncio.CancelledError:
         logger.info("Recording %s cancelled by user", meeting_id)
-        try:
-            await models.update_meeting_status(meeting_id, "cancelled")
-            await bot.send_message(user_id, "⏹ Запись остановлена вручную.")
-        except Exception:
-            pass
-        raise
+        # Stop audio capture before transcribing
+        if audio_proc and audio_proc.returncode is None:
+            audio_proc.terminate()
+            try:
+                await audio_proc.wait()
+            except Exception:
+                pass
+        # Process whatever was recorded
+        if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+            try:
+                await bot.send_message(user_id, "⏹ Запись остановлена вручную. Обрабатываю что успело записаться…")
+                await models.update_meeting_status(meeting_id, "transcribing")
+                segments = await transcribe_audio(audio_path)
+                transcript = format_transcript(segments, speaker_timeline, recording_start_msk)
+                await models.save_transcript(meeting_id, transcript)
+                await models.update_meeting_status(meeting_id, "analyzing")
+                await bot.send_message(user_id, "🤖 Анализирую встречу…")
+                summary, tags, topic, participants, meeting_type = await analyze_meeting(
+                    meeting_id, user_id, transcript, list(scraped_participants)
+                )
+                await models.save_analysis(meeting_id, summary, tags, topic, participants, meeting_type)
+                await models.update_meeting_status(meeting_id, "done")
+                tags_str = ", ".join(f"#{t}" for t in tags) if tags else "—"
+                participants_str = ", ".join(participants) if participants else "—"
+                type_icons = {
+                    "sales": "🤝", "internal": "🏠", "planning": "📅",
+                    "review": "🔍", "interview": "👤", "partner": "🤝", "other": "📌",
+                }
+                header = (
+                    f"✅ <b>Встреча обработана (остановлена вручную)</b>\n\n"
+                    f"📋 <b>Тема:</b> {topic}\n"
+                    f"{type_icons.get(meeting_type, '📌')} <b>Тип:</b> {meeting_type}\n"
+                    f"🏷 <b>Теги:</b> {tags_str}\n"
+                    f"👥 <b>Участники:</b> {participants_str}\n\n"
+                    f"📄 <b>Протокол:</b>\n"
+                )
+                full_msg = header + summary
+                if len(full_msg) <= 4000:
+                    await bot.send_message(user_id, full_msg)
+                else:
+                    await bot.send_message(user_id, header)
+                    for chunk_start in range(0, len(summary), 4000):
+                        await bot.send_message(user_id, summary[chunk_start:chunk_start + 4000])
+                row = [InlineKeyboardButton(text="📝 Транскрипт", callback_data=f"transcript:{meeting_id}")]
+                if os.path.exists(audio_path):
+                    row.append(InlineKeyboardButton(text="🎵 Аудио", callback_data=f"audio:{meeting_id}"))
+                await bot.send_message(
+                    user_id,
+                    "⬆️ Нажми чтобы получить транскрипт или аудио:",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[row]),
+                )
+            except Exception:
+                logger.exception("Error processing cancelled recording %s", meeting_id)
+                try:
+                    await models.update_meeting_status(meeting_id, "cancelled")
+                    await bot.send_message(user_id, "⏹ Запись остановлена вручную.")
+                except Exception:
+                    pass
+        else:
+            try:
+                await models.update_meeting_status(meeting_id, "cancelled")
+                await bot.send_message(user_id, "⏹ Запись остановлена вручную (аудио не записалось).")
+            except Exception:
+                pass
     except asyncio.TimeoutError:
         await _handle_error(
             meeting_id, user_id, bot, "Превышен лимит записи (3 часа)"
