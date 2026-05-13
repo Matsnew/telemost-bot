@@ -253,7 +253,7 @@ async def cb_meeting_detail(call: CallbackQuery) -> None:
     )
 
     import os as _os
-    audio_path = f"/tmp/{meeting_id}.wav"
+    audio_path = f"{config.AUDIO_DIR}/{meeting_id}.wav"
     has_audio = _os.path.exists(audio_path)
 
     await call.answer()
@@ -274,7 +274,7 @@ async def cb_meeting_audio(call: CallbackQuery) -> None:
         await call.answer("Встреча не найдена", show_alert=True)
         return
 
-    audio_path = f"/tmp/{meeting_id}.wav"
+    audio_path = f"{config.AUDIO_DIR}/{meeting_id}.wav"
     if not _os.path.exists(audio_path):
         await call.answer("Аудиофайл не найден (удалён или ещё не записан)", show_alert=True)
         return
@@ -554,7 +554,7 @@ async def cmd_reprocess(message: Message, bot: Bot) -> None:
     audio_path = _os.path.join("/audio", f"{meeting_id}.wav")
     if not _os.path.exists(audio_path):
         # fallback to /tmp
-        audio_path = f"/tmp/{meeting_id}.wav"
+        audio_path = f"{config.AUDIO_DIR}/{meeting_id}.wav"
     if not _os.path.exists(audio_path):
         await message.answer(f"❌ Аудиофайл не найден:\n<code>{audio_path}</code>")
         return
