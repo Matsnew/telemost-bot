@@ -17,7 +17,9 @@ _TAGGING_SYSTEM = (
 
 _TAGGING_PROMPT = """\
 Ты — система тегирования рабочих встреч. Твоя задача — проставить теги,
-которые обеспечат связность базы знаний через все встречи.
+которые позволят группировать встречи по проектам, продуктам и заказчикам.
+
+{calendar_title_hint}
 
 СУЩЕСТВУЮЩИЕ ТЕГИ В БАЗЕ (использовать в приоритете если подходят):
 {existing_tags}
@@ -25,21 +27,21 @@ _TAGGING_PROMPT = """\
 ТРАНСКРИПТ ВСТРЕЧИ:
 {transcript}
 
-ПРАВИЛА:
-1. Сначала проверь существующие теги — если встреча касается той же темы,
-   компании, проекта или человека что уже есть в базе, используй ТОЧНО
-   тот же тег (регистр, написание — всё идентично)
-2. Новый тег создавай только если тема действительно новая и её нет в базе
-3. Теги — короткие существительные или словосочетания (1-3 слова)
-4. Названия компаний, продуктов, проектов — всегда тегировать
-5. Имена ключевых участников — тегировать если упоминаются регулярно
-6. Количество тегов: 3-7 на встречу
+ПРАВИЛА ТЕГИРОВАНИЯ:
+1. Теги — это ТОЛЬКО названия проектов, продуктов, заказчиков/клиентов и команд.
+   Примеры хороших тегов: "Selectel", "RafNet", "проект Альфа", "команда backend"
+   Примеры плохих тегов: "деплой", "миграция", "баг", "договор" — это темы обсуждения, не теги
+2. Сначала проверь существующие теги — если встреча про тот же проект/продукт/заказчика,
+   используй ТОЧНО тот же тег (регистр и написание — идентично)
+3. Новый тег создавай только если проект/продукт/заказчик действительно новый
+4. Количество тегов: 1-4 (только самые важные сущности)
+5. Если название встречи содержит проект или заказчика — это главный сигнал для тега
 
 {participants_hint}
 
 ФОРМАТ ОТВЕТА — только JSON, никакого текста вокруг:
 {{
-  "tags": ["тег1", "тег2", "тег3"],
+  "tags": ["тег1", "тег2"],
   "topic": "одно предложение о чём встреча",
   "participants": ["имя1", "имя2"],
   "meeting_type": "тип встречи"
@@ -149,9 +151,20 @@ _ASK_PROMPT = """\
 
 
 async def _extract_metadata(
-    transcript: str, existing_tags: list[str], scraped_participants: list[str] = []
+    transcript: str,
+    existing_tags: list[str],
+    scraped_participants: list[str] = [],
+    calendar_title: str = "",
 ) -> tuple[list[str], str, list[str], str]:
     tags_str = ", ".join(existing_tags) if existing_tags else "тегов пока нет"
+
+    if calendar_title:
+        calendar_title_hint = (
+            f"НАЗВАНИЕ ВСТРЕЧИ ИЗ КАЛЕНДАРЯ (главный сигнал — проект/продукт/заказчик "
+            f"из названия должен стать тегом):\n{calendar_title}"
+        )
+    else:
+        calendar_title_hint = ""
 
     if scraped_participants:
         participants_hint = (
@@ -176,12 +189,12 @@ async def _extract_metadata(
                     existing_tags=tags_str,
                     transcript=transcript[:8000],
                     participants_hint=participants_hint,
+                    calendar_title_hint=calendar_title_hint,
                 ),
             },
         ],
     )
     data = json.loads(response.choices[0].message.content)
-    # Prefer scraped names over GPT's guess
     participants = scraped_participants if scraped_participants else data.get("participants", [])
     return (
         data.get("tags", []),
@@ -231,12 +244,16 @@ async def _build_protocol(
 
 
 async def analyze_meeting(
-    meeting_id: str, user_id: int, transcript: str, scraped_participants: list[str] | None = None
+    meeting_id: str,
+    user_id: int,
+    transcript: str,
+    scraped_participants: list[str] | None = None,
+    calendar_title: str = "",
 ) -> tuple[str, list[str], str, list[str], str]:
     """Returns (summary, tags, topic, participants, meeting_type)."""
     existing_tags = await models.get_existing_tags(user_id)
     tags, topic, participants, meeting_type = await _extract_metadata(
-        transcript, existing_tags, scraped_participants or []
+        transcript, existing_tags, scraped_participants or [], calendar_title
     )
     logger.info("Metadata: topic=%r type=%r tags=%r", topic, meeting_type, tags)
 

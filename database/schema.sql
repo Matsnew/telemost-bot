@@ -25,6 +25,7 @@ CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
 
 -- migrations
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_type TEXT;
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS calendar_title TEXT;
 
 -- Google Calendar integration
 CREATE TABLE IF NOT EXISTS google_tokens (

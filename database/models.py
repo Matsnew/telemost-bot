@@ -129,6 +129,15 @@ async def save_analysis(
         )
 
 
+async def set_calendar_title(meeting_id: str, title: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE meetings SET calendar_title = $1 WHERE id = $2",
+            title, meeting_id,
+        )
+
+
 async def get_existing_tags(user_id: int, limit: int = 20) -> list[str]:
     """Return the user's most frequently used tags for prompt context."""
     pool = await get_pool()

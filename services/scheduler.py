@@ -48,6 +48,7 @@ async def _check_and_join(bot: Bot) -> None:
 
             await models.mark_calendar_event_joined(user_id, google_id)
             meeting_id = await models.create_meeting(user_id, meeting_url)
+            await models.set_calendar_title(meeting_id, event["title"])
             recorder.start_recording(meeting_id, user_id, meeting_url, bot)
 
             await bot.send_message(

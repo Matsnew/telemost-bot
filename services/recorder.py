@@ -466,8 +466,11 @@ async def _recording_pipeline(
         await models.update_meeting_status(meeting_id, "analyzing")
         await bot.send_message(user_id, "🤖 Анализирую встречу…")
 
+        meeting_row = await models.get_meeting_raw(meeting_id, user_id)
+        calendar_title = (meeting_row or {}).get("calendar_title") or ""
+
         summary, tags, topic, participants, meeting_type = await analyze_meeting(
-            meeting_id, user_id, transcript, list(scraped_participants)
+            meeting_id, user_id, transcript, list(scraped_participants), calendar_title
         )
         await models.save_analysis(meeting_id, summary, tags, topic, participants, meeting_type)
         await models.update_meeting_status(meeting_id, "done")
