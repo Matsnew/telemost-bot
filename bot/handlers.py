@@ -34,6 +34,10 @@ class AskState(StatesGroup):
     waiting_question = State()
 
 
+class EditTagsState(StatesGroup):
+    waiting_tags = State()
+
+
 # ── Keyboards ─────────────────────────────────────────────────────────────
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -216,6 +220,9 @@ def meeting_detail_inline(meeting_id: str, has_transcript: bool, has_audio: bool
         buttons.append([
             InlineKeyboardButton(text="🎵 Скачать аудио", callback_data=f"audio:{meeting_id}")
         ])
+    buttons.append([
+        InlineKeyboardButton(text="🏷 Изменить теги", callback_data=f"edit_tags:{meeting_id}")
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -528,6 +535,49 @@ async def cb_cal_event_toggle(call: CallbackQuery) -> None:
     all_events = await get_upcoming_events(user_id, days=7)
     await call.message.edit_reply_markup(
         reply_markup=events_inline(all_events, selected_ids, show_select=True)
+    )
+
+
+@router.callback_query(F.data.startswith("edit_tags:"))
+async def cb_edit_tags(call: CallbackQuery, state: FSMContext) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    if not await models.meeting_belongs_to_user(meeting_id, call.from_user.id):
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+    await state.set_state(EditTagsState.waiting_tags)
+    await state.update_data(meeting_id=meeting_id)
+    await call.answer()
+    await call.message.answer(
+        "🏷 Отправь новые теги через запятую:\n"
+        "Например: <code>Selectel, RafNet, проект Альфа</code>\n\n"
+        "Или отправь пустое сообщение чтобы очистить теги.",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(EditTagsState.waiting_tags)
+async def cmd_edit_tags_save(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    meeting_id = data.get("meeting_id")
+    await state.clear()
+
+    raw = (message.text or "").strip()
+    if raw:
+        tags = [t.strip().lstrip("#") for t in raw.replace(",", " ").split() if t.strip()]
+    else:
+        tags = []
+
+    pool = await __import__("database.connection", fromlist=["get_pool"]).get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE meetings SET tags = $1 WHERE id = $2",
+            tags, meeting_id,
+        )
+
+    tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
+    await message.answer(
+        f"✅ Теги обновлены: {tags_str}",
+        reply_markup=main_keyboard(),
     )
 
 
