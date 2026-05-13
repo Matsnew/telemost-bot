@@ -157,6 +157,51 @@ async def get_existing_tags(user_id: int, limit: int = 20) -> list[str]:
     return [row["tag"] for row in rows]
 
 
+async def get_all_tags(user_id: int) -> list[dict]:
+    """Return all distinct tags with usage count, ordered by frequency."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT unnest(tags) AS tag, COUNT(*) AS cnt
+            FROM meetings
+            WHERE user_id = $1 AND tags IS NOT NULL
+            GROUP BY tag
+            ORDER BY cnt DESC, tag
+            """,
+            user_id,
+        )
+    return [{"tag": row["tag"], "count": row["cnt"]} for row in rows]
+
+
+async def delete_tag_everywhere(user_id: int, tag: str) -> int:
+    """Remove tag from all meetings, return number of affected meetings."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE meetings SET tags = array_remove(tags, $1)
+            WHERE user_id = $2 AND $1 = ANY(tags)
+            """,
+            tag, user_id,
+        )
+    return int(result.split()[-1])
+
+
+async def rename_tag_everywhere(user_id: int, old_tag: str, new_tag: str) -> int:
+    """Rename tag in all meetings, return number of affected meetings."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE meetings SET tags = array_replace(tags, $1, $2)
+            WHERE user_id = $3 AND $1 = ANY(tags)
+            """,
+            old_tag, new_tag, user_id,
+        )
+    return int(result.split()[-1])
+
+
 async def save_error(meeting_id: str, error_message: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

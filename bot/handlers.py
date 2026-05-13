@@ -39,6 +39,10 @@ class EditTagsState(StatesGroup):
     waiting_new_tag = State()
 
 
+class RenameTagState(StatesGroup):
+    waiting_new_name = State()
+
+
 # ── Keyboards ─────────────────────────────────────────────────────────────
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -88,6 +92,28 @@ def events_inline(
         row = [InlineKeyboardButton(text=label, callback_data=f"cal:ev:{gid}")]
         buttons.append(row)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def all_tags_inline(tags: list[dict]) -> InlineKeyboardMarkup:
+    buttons = []
+    for item in tags:
+        tag = item["tag"]
+        cnt = item["count"]
+        buttons.append([InlineKeyboardButton(
+            text=f"🏷 #{tag}  ×{cnt}",
+            callback_data=f"tag_manage:{tag}",
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def tag_actions_inline(tag: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"tag_rename:{tag}"),
+            InlineKeyboardButton(text="🗑 Удалить везде", callback_data=f"tag_delete:{tag}"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="tags_list")],
+    ])
 
 
 def tags_edit_inline(meeting_id: str, tags: list[str]) -> InlineKeyboardMarkup:
@@ -647,6 +673,91 @@ async def cb_tags_done(call: CallbackQuery) -> None:
     tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
     await call.answer("Сохранено ✅")
     await call.message.edit_text(f"✅ Теги сохранены: {tags_str}")
+
+
+@router.message(Command("tags"))
+async def cmd_tags(message: Message) -> None:
+    user_id = message.from_user.id
+    tags = await models.get_all_tags(user_id)
+    if not tags:
+        await message.answer("🏷 Тегов пока нет — они появятся после первой встречи.")
+        return
+    await message.answer(
+        "🏷 <b>Все теги</b>\n"
+        "Цифра рядом — сколько встреч. "
+        "Нажми на тег чтобы переименовать или удалить из всех встреч:",
+        reply_markup=all_tags_inline(tags),
+    )
+
+
+@router.callback_query(F.data == "tags_list")
+async def cb_tags_list(call: CallbackQuery) -> None:
+    tags = await models.get_all_tags(call.from_user.id)
+    await call.answer()
+    if not tags:
+        await call.message.edit_text("🏷 Тегов пока нет.")
+        return
+    await call.message.edit_text(
+        "🏷 <b>Все теги</b>\n"
+        "Цифра рядом — сколько встреч. "
+        "Нажми на тег чтобы переименовать или удалить из всех встреч:",
+        reply_markup=all_tags_inline(tags),
+    )
+
+
+@router.callback_query(F.data.startswith("tag_manage:"))
+async def cb_tag_manage(call: CallbackQuery) -> None:
+    tag = call.data[len("tag_manage:"):]
+    await call.answer()
+    await call.message.edit_text(
+        f"🏷 Тег <b>#{tag}</b>\nВыбери действие:",
+        reply_markup=tag_actions_inline(tag),
+    )
+
+
+@router.callback_query(F.data.startswith("tag_delete:"))
+async def cb_tag_delete(call: CallbackQuery) -> None:
+    tag = call.data[len("tag_delete:"):]
+    count = await models.delete_tag_everywhere(call.from_user.id, tag)
+    await call.answer(f"#{tag} удалён из {count} встреч", show_alert=True)
+    tags = await models.get_all_tags(call.from_user.id)
+    if not tags:
+        await call.message.edit_text("🏷 Тегов больше нет.")
+        return
+    await call.message.edit_text(
+        "🏷 <b>Все теги</b>\nНажми на тег чтобы переименовать или удалить из всех встреч:",
+        reply_markup=all_tags_inline(tags),
+    )
+
+
+@router.callback_query(F.data.startswith("tag_rename:"))
+async def cb_tag_rename(call: CallbackQuery, state: FSMContext) -> None:
+    tag = call.data[len("tag_rename:"):]
+    await state.set_state(RenameTagState.waiting_new_name)
+    await state.update_data(old_tag=tag)
+    await call.answer()
+    await call.message.answer(
+        f"✏️ Введи новое название для тега <b>#{tag}</b>:",
+        reply_markup=cancel_keyboard(),
+    )
+
+
+@router.message(RenameTagState.waiting_new_name)
+async def cmd_tag_rename_save(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    old_tag = data.get("old_tag")
+    await state.clear()
+
+    new_tag = (message.text or "").strip().lstrip("#")
+    if not new_tag:
+        await message.answer("Переименование отменено.", reply_markup=main_keyboard())
+        return
+
+    count = await models.rename_tag_everywhere(message.from_user.id, old_tag, new_tag)
+    await message.answer(
+        f"✅ <b>#{old_tag}</b> → <b>#{new_tag}</b> в {count} встречах.",
+        reply_markup=main_keyboard(),
+    )
 
 
 @router.message(Command("reprocess"))
