@@ -202,6 +202,21 @@ async def rename_tag_everywhere(user_id: int, old_tag: str, new_tag: str) -> int
     return int(result.split()[-1])
 
 
+async def reset_stuck_meetings() -> int:
+    """On startup: mark meetings stuck in active states as error (service was restarted)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE meetings
+            SET status = 'error',
+                error_message = 'Прервано из-за перезапуска сервиса'
+            WHERE status IN ('started', 'recording', 'transcribing', 'analyzing')
+            """,
+        )
+    return int(result.split()[-1])
+
+
 async def save_error(meeting_id: str, error_message: str) -> None:
     pool = await get_pool()
     async with pool.acquire() as conn:

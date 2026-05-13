@@ -10,6 +10,8 @@ _PAUSE_THRESHOLD = 5.0  # seconds of silence between segments to start a new blo
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=config.TRANSCRIPTION_WORKERS)
+# Whisper is heavy (~1.5 GB RAM). Run only one transcription at a time to avoid OOM.
+_transcribe_semaphore = asyncio.Semaphore(1)
 
 
 @dataclass
@@ -103,5 +105,6 @@ def format_transcript(
 
 
 async def transcribe_audio(audio_path: str) -> list[TranscriptSegment]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_executor, _transcribe_sync, audio_path)
+    async with _transcribe_semaphore:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_executor, _transcribe_sync, audio_path)

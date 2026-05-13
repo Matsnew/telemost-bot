@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 
 from config import config
 from database.connection import close_db, init_db
+from database import models
 from bot.handlers import router
 from bot.middlewares import AllowedUsersMiddleware
 from services.scheduler import run_scheduler
@@ -81,6 +82,9 @@ async def run_api() -> None:
 async def main() -> None:
     logger.info("Initialising database …")
     await init_db()
+    count = await models.reset_stuck_meetings()
+    if count:
+        logger.warning("Reset %d stuck meetings to 'error' (service was restarted)", count)
     logger.info("Service ready.")
     try:
         await asyncio.gather(run_bot(), run_api(), run_scheduler(bot))
