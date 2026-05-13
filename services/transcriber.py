@@ -2,8 +2,10 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from config import config
+
+_PAUSE_THRESHOLD = 5.0  # seconds of silence between segments to start a new block
 
 logger = logging.getLogger(__name__)
 
@@ -50,19 +52,54 @@ def _find_speaker_at(timestamp: float, timeline: list[tuple[float, str]]) -> str
     return speaker
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    """Format seconds as [MM:SS] or [HH:MM:SS] relative to recording start."""
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"[{h:02d}:{m:02d}:{s:02d}]"
+    return f"[{m:02d}:{s:02d}]"
+
+
 def format_transcript(
     segments: list[TranscriptSegment],
     speaker_timeline: list[tuple[float, str]],
-    recording_start_msk: datetime,
+    recording_start_msk: datetime,  # kept for API compatibility, no longer used for timestamps
 ) -> str:
-    lines = []
+    if not segments:
+        return ""
+
+    # Build blocks: merge consecutive segments from same speaker with no big pause
+    blocks: list[dict] = []
+    current: dict | None = None
+
     for seg in segments:
-        msk_time = recording_start_msk + timedelta(seconds=seg.start)
-        time_str = msk_time.strftime("%H:%M:%S")
         speaker = _find_speaker_at(seg.start, speaker_timeline)
-        prefix = f"[{time_str}] {speaker}:" if speaker else f"[{time_str}]"
-        lines.append(f"{prefix} {seg.text}")
-    return "\n".join(lines)
+        gap = (seg.start - current["last_end"]) if current else 0.0
+        same_speaker = current is not None and speaker == current["speaker"]
+
+        if current is None or not same_speaker or gap > _PAUSE_THRESHOLD:
+            if current is not None:
+                blocks.append(current)
+            current = {"start": seg.start, "speaker": speaker, "texts": [seg.text], "last_end": seg.end}
+        else:
+            current["texts"].append(seg.text)
+            current["last_end"] = seg.end
+
+    if current is not None:
+        blocks.append(current)
+
+    # Format blocks
+    lines = []
+    for block in blocks:
+        time_str = _fmt_elapsed(block["start"])
+        speaker = block["speaker"]
+        text = " ".join(block["texts"])
+        prefix = f"{time_str} {speaker}:" if speaker else time_str
+        lines.append(f"{prefix} {text}")
+
+    return "\n\n".join(lines)
 
 
 async def transcribe_audio(audio_path: str) -> list[TranscriptSegment]:
