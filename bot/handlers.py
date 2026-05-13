@@ -16,6 +16,7 @@ from aiogram.types import (
 
 from config import config
 from database import models
+from database.connection import get_pool
 from services import recorder
 from services.analyzer import answer_question
 from services.calendar_service import get_auth_url, get_upcoming_events
@@ -35,7 +36,7 @@ class AskState(StatesGroup):
 
 
 class EditTagsState(StatesGroup):
-    waiting_tags = State()
+    waiting_new_tag = State()
 
 
 # ── Keyboards ─────────────────────────────────────────────────────────────
@@ -86,6 +87,20 @@ def events_inline(
         label = f"{'✅' if gid in selected_ids else '⬜'} {time_str} — {title}"
         row = [InlineKeyboardButton(text=label, callback_data=f"cal:ev:{gid}")]
         buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def tags_edit_inline(meeting_id: str, tags: list[str]) -> InlineKeyboardMarkup:
+    buttons = []
+    for tag in tags:
+        buttons.append([InlineKeyboardButton(
+            text=f"❌ #{tag}",
+            callback_data=f"tags_rm:{meeting_id}:{tag}",
+        )])
+    buttons.append([
+        InlineKeyboardButton(text="➕ Добавить тег", callback_data=f"tags_add:{meeting_id}"),
+        InlineKeyboardButton(text="✅ Готово", callback_data=f"tags_done:{meeting_id}"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -538,47 +553,100 @@ async def cb_cal_event_toggle(call: CallbackQuery) -> None:
     )
 
 
+def _tags_edit_text(tags: list[str]) -> str:
+    tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
+    return (
+        f"🏷 <b>Редактирование тегов</b>\n\n"
+        f"Текущие теги: {tags_str}\n\n"
+        "Нажми ❌ рядом с тегом чтобы убрать его, или ➕ чтобы добавить новый."
+    )
+
+
 @router.callback_query(F.data.startswith("edit_tags:"))
-async def cb_edit_tags(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_edit_tags(call: CallbackQuery) -> None:
     meeting_id = call.data.split(":", 1)[1]
     if not await models.meeting_belongs_to_user(meeting_id, call.from_user.id):
         await call.answer("Встреча не найдена", show_alert=True)
         return
-    await state.set_state(EditTagsState.waiting_tags)
+    meeting = await models.get_meeting_raw(meeting_id, call.from_user.id)
+    tags = list(meeting.get("tags") or [])
+    await call.answer()
+    await call.message.answer(
+        _tags_edit_text(tags),
+        reply_markup=tags_edit_inline(meeting_id, tags),
+    )
+
+
+@router.callback_query(F.data.startswith("tags_rm:"))
+async def cb_tags_remove(call: CallbackQuery) -> None:
+    _, meeting_id, tag = call.data.split(":", 2)
+    if not await models.meeting_belongs_to_user(meeting_id, call.from_user.id):
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+    meeting = await models.get_meeting_raw(meeting_id, call.from_user.id)
+    tags = list(meeting.get("tags") or [])
+    if tag in tags:
+        tags.remove(tag)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE meetings SET tags = $1 WHERE id = $2", tags, meeting_id)
+    await call.answer(f"Тег #{tag} удалён")
+    await call.message.edit_text(
+        _tags_edit_text(tags),
+        reply_markup=tags_edit_inline(meeting_id, tags),
+    )
+
+
+@router.callback_query(F.data.startswith("tags_add:"))
+async def cb_tags_add(call: CallbackQuery, state: FSMContext) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    if not await models.meeting_belongs_to_user(meeting_id, call.from_user.id):
+        await call.answer("Встреча не найдена", show_alert=True)
+        return
+    await state.set_state(EditTagsState.waiting_new_tag)
     await state.update_data(meeting_id=meeting_id)
     await call.answer()
     await call.message.answer(
-        "🏷 Отправь новые теги через запятую:\n"
-        "Например: <code>Selectel, RafNet, проект Альфа</code>\n\n"
-        "Или отправь пустое сообщение чтобы очистить теги.",
+        "➕ Отправь название нового тега:\n"
+        "Например: <code>Selectel</code> или <code>проект Альфа</code>",
         reply_markup=cancel_keyboard(),
     )
 
 
-@router.message(EditTagsState.waiting_tags)
-async def cmd_edit_tags_save(message: Message, state: FSMContext) -> None:
+@router.message(EditTagsState.waiting_new_tag)
+async def cmd_tags_add_save(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     meeting_id = data.get("meeting_id")
     await state.clear()
 
-    raw = (message.text or "").strip()
-    if raw:
-        tags = [t.strip().lstrip("#") for t in raw.replace(",", " ").split() if t.strip()]
-    else:
-        tags = []
+    raw = (message.text or "").strip().lstrip("#")
+    if not raw:
+        await message.answer("Тег не добавлен.", reply_markup=main_keyboard())
+        return
 
-    pool = await __import__("database.connection", fromlist=["get_pool"]).get_pool()
+    meeting = await models.get_meeting_raw(meeting_id, message.from_user.id)
+    tags = list(meeting.get("tags") or [])
+    if raw not in tags:
+        tags.append(raw)
+
+    pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE meetings SET tags = $1 WHERE id = $2",
-            tags, meeting_id,
-        )
+        await conn.execute("UPDATE meetings SET tags = $1 WHERE id = $2", tags, meeting_id)
 
-    tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
     await message.answer(
-        f"✅ Теги обновлены: {tags_str}",
-        reply_markup=main_keyboard(),
+        _tags_edit_text(tags),
+        reply_markup=tags_edit_inline(meeting_id, tags),
     )
+
+
+@router.callback_query(F.data.startswith("tags_done:"))
+async def cb_tags_done(call: CallbackQuery) -> None:
+    meeting_id = call.data.split(":", 1)[1]
+    meeting = await models.get_meeting_raw(meeting_id, call.from_user.id)
+    tags = list(meeting.get("tags") or [])
+    tags_str = " ".join(f"#{t}" for t in tags) if tags else "—"
+    await call.answer("Сохранено ✅")
+    await call.message.edit_text(f"✅ Теги сохранены: {tags_str}")
 
 
 @router.message(Command("reprocess"))
