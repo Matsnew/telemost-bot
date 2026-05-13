@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Any
 from database.connection import get_pool
 from utils.encryption import encrypt, decrypt
@@ -224,6 +225,182 @@ async def get_recent_meetings_by_tags(
             limit,
         )
     return [dict(r) for r in rows]
+
+
+# ── Google Calendar ────────────────────────────────────────────────────────
+
+async def save_google_token(
+    user_id: int,
+    access_token: str,
+    refresh_token: str | None,
+    token_expiry: datetime | None,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO google_tokens (user_id, access_token, refresh_token, token_expiry, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+              SET access_token = EXCLUDED.access_token,
+                  refresh_token = COALESCE(EXCLUDED.refresh_token, google_tokens.refresh_token),
+                  token_expiry = EXCLUDED.token_expiry,
+                  updated_at = NOW()
+            """,
+            user_id,
+            encrypt(access_token),
+            encrypt(refresh_token) if refresh_token else None,
+            token_expiry,
+        )
+
+
+async def get_google_token(user_id: int) -> dict[str, Any] | None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM google_tokens WHERE user_id = $1", user_id
+        )
+    if not row:
+        return None
+    result = dict(row)
+    result["access_token"] = decrypt(result["access_token"])
+    if result.get("refresh_token"):
+        result["refresh_token"] = decrypt(result["refresh_token"])
+    return result
+
+
+async def delete_google_token(user_id: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM google_tokens WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM calendar_settings WHERE user_id = $1", user_id)
+        await conn.execute("DELETE FROM calendar_events WHERE user_id = $1", user_id)
+
+
+async def get_calendar_settings(user_id: int) -> dict[str, Any]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM calendar_settings WHERE user_id = $1", user_id
+        )
+    if not row:
+        return {"user_id": user_id, "enabled": True, "auto_join_all": False, "join_minutes_before": 1}
+    return dict(row)
+
+
+async def save_calendar_settings(
+    user_id: int,
+    enabled: bool,
+    auto_join_all: bool,
+    join_minutes_before: int,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO calendar_settings (user_id, enabled, auto_join_all, join_minutes_before)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (user_id) DO UPDATE
+              SET enabled = EXCLUDED.enabled,
+                  auto_join_all = EXCLUDED.auto_join_all,
+                  join_minutes_before = EXCLUDED.join_minutes_before
+            """,
+            user_id, enabled, auto_join_all, join_minutes_before,
+        )
+
+
+async def get_calendar_enabled_users() -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT cs.user_id, cs.auto_join_all, cs.join_minutes_before
+            FROM calendar_settings cs
+            JOIN google_tokens gt ON gt.user_id = cs.user_id
+            WHERE cs.enabled = TRUE
+            """
+        )
+    return [dict(r) for r in rows]
+
+
+async def upsert_calendar_event(
+    user_id: int,
+    google_id: str,
+    title: str,
+    start_time: datetime,
+    meeting_url: str,
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO calendar_events
+              (user_id, google_id, title, start_time, meeting_url, event_date)
+            VALUES ($1, $2, $3, $4, $5, $4::date)
+            ON CONFLICT (user_id, google_id) DO UPDATE
+              SET title = EXCLUDED.title,
+                  start_time = EXCLUDED.start_time,
+                  meeting_url = EXCLUDED.meeting_url,
+                  event_date = EXCLUDED.event_date
+            """,
+            user_id, google_id, title, start_time, meeting_url,
+        )
+
+
+async def get_calendar_events(
+    user_id: int, date_from: datetime, date_to: datetime
+) -> list[dict[str, Any]]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM calendar_events
+            WHERE user_id = $1 AND start_time >= $2 AND start_time < $3
+            ORDER BY start_time
+            """,
+            user_id, date_from, date_to,
+        )
+    return [dict(r) for r in rows]
+
+
+async def set_calendar_event_selected(
+    user_id: int, google_id: str, selected: bool
+) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE calendar_events SET selected = $1 WHERE user_id = $2 AND google_id = $3",
+            selected, user_id, google_id,
+        )
+
+
+async def is_calendar_event_joined(user_id: int, google_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT joined FROM calendar_events WHERE user_id = $1 AND google_id = $2",
+            user_id, google_id,
+        )
+    return bool(row and row["joined"])
+
+
+async def mark_calendar_event_joined(user_id: int, google_id: str) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE calendar_events SET joined = TRUE WHERE user_id = $1 AND google_id = $2",
+            user_id, google_id,
+        )
+
+
+async def is_calendar_event_selected(user_id: int, google_id: str) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT selected FROM calendar_events WHERE user_id = $1 AND google_id = $2",
+            user_id, google_id,
+        )
+    return bool(row and row["selected"])
 
 
 async def get_all_summaries(user_id: int, limit: int = 50) -> list[dict[str, Any]]:

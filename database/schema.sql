@@ -25,3 +25,35 @@ CREATE INDEX IF NOT EXISTS idx_meetings_status ON meetings(status);
 
 -- migrations
 ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_type TEXT;
+
+-- Google Calendar integration
+CREATE TABLE IF NOT EXISTS google_tokens (
+    user_id BIGINT PRIMARY KEY REFERENCES users(id),
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    token_expiry TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS calendar_settings (
+    user_id BIGINT PRIMARY KEY REFERENCES users(id),
+    enabled BOOLEAN DEFAULT TRUE,
+    auto_join_all BOOLEAN DEFAULT FALSE,
+    join_minutes_before INT DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+    user_id BIGINT REFERENCES users(id),
+    google_id TEXT NOT NULL,
+    title TEXT,
+    start_time TIMESTAMP WITH TIME ZONE,
+    meeting_url TEXT,
+    selected BOOLEAN DEFAULT FALSE,
+    joined BOOLEAN DEFAULT FALSE,
+    event_date DATE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (user_id, google_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_user_date ON calendar_events(user_id, event_date);

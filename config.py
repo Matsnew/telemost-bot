@@ -37,6 +37,16 @@ class Config:
     # Rate limiting
     ASK_RATE_LIMIT: int = 10  # requests per minute
 
+    # Google Calendar
+    GOOGLE_CLIENT_ID: str = os.environ.get("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+    BOT_PUBLIC_URL: str = os.environ.get("BOT_PUBLIC_URL", "")  # e.g. https://xxx.railway.app
+    CALENDAR_JOIN_BEFORE_MINUTES: int = int(os.environ.get("CALENDAR_JOIN_BEFORE_MINUTES", "1"))
+
+    @property
+    def GOOGLE_REDIRECT_URI(self) -> str:
+        return f"{self.BOT_PUBLIC_URL}/oauth/google/callback"
+
     # System
     AUDIO_DIR: str = "/audio"
     DISPLAY: str = ":99"

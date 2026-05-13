@@ -18,6 +18,7 @@ from config import config
 from database import models
 from services import recorder
 from services.analyzer import answer_question
+from services.calendar_service import get_auth_url, get_upcoming_events
 from bot.rate_limiter import check_ask_rate_limit
 from utils.time import fmt_msk
 
@@ -40,10 +41,48 @@ def main_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🎬 Активные записи"), KeyboardButton(text="📚 История встреч")],
             [KeyboardButton(text="🔍 Задать вопрос"), KeyboardButton(text="ℹ️ Помощь")],
+            [KeyboardButton(text="📅 Календарь")],
         ],
         resize_keyboard=True,
         persistent=True,
     )
+
+
+# ── Calendar keyboards ─────────────────────────────────────────────────────
+
+def calendar_menu_inline(connected: bool, auto_join: bool) -> InlineKeyboardMarkup:
+    if not connected:
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔗 Подключить Google Calendar", callback_data="cal:connect"),
+        ]])
+    mode_label = "✅ Все встречи автоматически" if auto_join else "✅ Только выбранные"
+    toggle_label = "Переключить на ручной выбор" if auto_join else "Переключить на автоматический"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Режим: {mode_label}", callback_data="cal:noop")],
+        [InlineKeyboardButton(text=toggle_label, callback_data="cal:toggle_mode")],
+        [
+            InlineKeyboardButton(text="📋 Встречи сегодня", callback_data="cal:today"),
+            InlineKeyboardButton(text="📋 На неделю", callback_data="cal:week"),
+        ],
+        [InlineKeyboardButton(text="🔓 Отключить календарь", callback_data="cal:disconnect")],
+    ])
+
+
+def events_inline(
+    events: list[dict],
+    selected_ids: set[str],
+    show_select: bool,
+) -> InlineKeyboardMarkup:
+    buttons = []
+    for ev in events:
+        gid = ev["google_id"]
+        start = ev["start"]
+        time_str = start.strftime("%d.%m %H:%M") if hasattr(start, "strftime") else str(start)
+        title = (ev.get("title") or "Без названия")[:30]
+        label = f"{'✅' if gid in selected_ids else '⬜'} {time_str} — {title}"
+        row = [InlineKeyboardButton(text=label, callback_data=f"cal:ev:{gid}")]
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def cancel_keyboard() -> ReplyKeyboardMarkup:
@@ -348,6 +387,148 @@ async def cmd_ask_answer(message: Message, state: FSMContext) -> None:
             f"❌ Ошибка при обращении к OpenAI:\n<code>{str(exc)[:300]}</code>",
             reply_markup=main_keyboard()
         )
+
+
+# ── Calendar handlers ──────────────────────────────────────────────────────
+
+@router.message(F.text == "📅 Календарь")
+async def cmd_calendar(message: Message) -> None:
+    user_id = message.from_user.id
+    token = await models.get_google_token(user_id)
+    if not token:
+        await message.answer(
+            "📅 <b>Google Calendar</b>\n\nКалендарь не подключён.",
+            reply_markup=calendar_menu_inline(connected=False, auto_join=False),
+        )
+        return
+    settings = await models.get_calendar_settings(user_id)
+    await message.answer(
+        "📅 <b>Google Calendar подключён</b>\n\nВыбери действие:",
+        reply_markup=calendar_menu_inline(connected=True, auto_join=settings["auto_join_all"]),
+    )
+
+
+@router.callback_query(F.data == "cal:connect")
+async def cb_cal_connect(call: CallbackQuery) -> None:
+    if not config.GOOGLE_CLIENT_ID:
+        await call.answer("Google Calendar не настроен на сервере.", show_alert=True)
+        return
+    url = get_auth_url(call.from_user.id)
+    await call.answer()
+    await call.message.answer(
+        f"🔗 Перейди по ссылке для авторизации Google Calendar:\n\n{url}\n\n"
+        "После авторизации вернись сюда — бот пришлёт подтверждение."
+    )
+
+
+@router.callback_query(F.data == "cal:disconnect")
+async def cb_cal_disconnect(call: CallbackQuery) -> None:
+    await models.delete_google_token(call.from_user.id)
+    await call.answer("Календарь отключён.")
+    await call.message.edit_text(
+        "📅 <b>Google Calendar отключён.</b>",
+        reply_markup=calendar_menu_inline(connected=False, auto_join=False),
+    )
+
+
+@router.callback_query(F.data == "cal:toggle_mode")
+async def cb_cal_toggle_mode(call: CallbackQuery) -> None:
+    user_id = call.from_user.id
+    settings = await models.get_calendar_settings(user_id)
+    new_mode = not settings["auto_join_all"]
+    await models.save_calendar_settings(
+        user_id,
+        enabled=settings["enabled"],
+        auto_join_all=new_mode,
+        join_minutes_before=settings["join_minutes_before"],
+    )
+    mode_text = "все встречи автоматически ✅" if new_mode else "только выбранные вручную ✅"
+    await call.answer(f"Режим изменён: {mode_text}")
+    await call.message.edit_reply_markup(
+        reply_markup=calendar_menu_inline(connected=True, auto_join=new_mode)
+    )
+
+
+@router.callback_query(F.data == "cal:noop")
+async def cb_cal_noop(call: CallbackQuery) -> None:
+    await call.answer()
+
+
+async def _show_events(call: CallbackQuery, days: int) -> None:
+    user_id = call.from_user.id
+    await call.answer("Загружаю встречи…")
+    try:
+        events = await get_upcoming_events(user_id, days=days)
+    except Exception as exc:
+        await call.message.answer(f"❌ Ошибка загрузки календаря: {exc}")
+        return
+
+    if not events:
+        period = "сегодня" if days == 1 else f"на {days} дней"
+        await call.message.answer(f"📋 Встреч с Телемостом {period} нет.")
+        return
+
+    settings = await models.get_calendar_settings(user_id)
+    auto_join = settings["auto_join_all"]
+
+    # Get selected event IDs from DB
+    from datetime import timezone as _tz
+    from datetime import datetime as _dt
+    now = _dt.now(_tz.utc)
+    db_events = await models.get_calendar_events(
+        user_id,
+        date_from=now,
+        date_to=now + __import__("datetime").timedelta(days=days),
+    )
+    selected_ids = {e["google_id"] for e in db_events if e["selected"]}
+
+    period_label = "сегодня" if days == 1 else f"на {days} дней"
+    mode_hint = (
+        "Режим: <b>автоматически</b> — подключусь ко всем."
+        if auto_join
+        else "Режим: <b>ручной</b> — нажми на встречу чтобы выбрать/убрать ✅."
+    )
+    await call.message.answer(
+        f"📋 <b>Встречи {period_label}:</b>\n{mode_hint}",
+        reply_markup=events_inline(events, selected_ids, show_select=not auto_join),
+    )
+
+
+@router.callback_query(F.data == "cal:today")
+async def cb_cal_today(call: CallbackQuery) -> None:
+    await _show_events(call, days=1)
+
+
+@router.callback_query(F.data == "cal:week")
+async def cb_cal_week(call: CallbackQuery) -> None:
+    await _show_events(call, days=7)
+
+
+@router.callback_query(F.data.startswith("cal:ev:"))
+async def cb_cal_event_toggle(call: CallbackQuery) -> None:
+    user_id = call.from_user.id
+    google_id = call.data[len("cal:ev:"):]
+
+    settings = await models.get_calendar_settings(user_id)
+    if settings["auto_join_all"]:
+        await call.answer("В автоматическом режиме все встречи подключаются сами.", show_alert=True)
+        return
+
+    currently = await models.is_calendar_event_selected(user_id, google_id)
+    new_val = not currently
+    await models.set_calendar_event_selected(user_id, google_id, new_val)
+    status = "добавлена ✅" if new_val else "убрана ❌"
+    await call.answer(f"Встреча {status}")
+
+    # Refresh the message keyboard
+    from datetime import timezone as _tz, datetime as _dt, timedelta as _td
+    now = _dt.now(_tz.utc)
+    db_events = await models.get_calendar_events(user_id, date_from=now, date_to=now + _td(days=7))
+    selected_ids = {e["google_id"] for e in db_events if e["selected"]}
+    all_events = await get_upcoming_events(user_id, days=7)
+    await call.message.edit_reply_markup(
+        reply_markup=events_inline(all_events, selected_ids, show_select=True)
+    )
 
 
 @router.message(Command("reprocess"))
