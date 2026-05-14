@@ -58,3 +58,6 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_calendar_events_user_date ON calendar_events(user_id, event_date);
+
+-- migrations
+ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS calendar_name TEXT;

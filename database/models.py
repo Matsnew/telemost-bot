@@ -398,6 +398,7 @@ async def upsert_calendar_event(
     title: str,
     start_time: datetime,
     meeting_url: str,
+    calendar_name: str = "",
 ) -> None:
     pool = await get_pool()
     event_date = start_time.date()
@@ -405,15 +406,16 @@ async def upsert_calendar_event(
         await conn.execute(
             """
             INSERT INTO calendar_events
-              (user_id, google_id, title, start_time, meeting_url, event_date)
-            VALUES ($1, $2, $3, $4, $5, $6)
+              (user_id, google_id, title, start_time, meeting_url, event_date, calendar_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (user_id, google_id) DO UPDATE
               SET title = EXCLUDED.title,
                   start_time = EXCLUDED.start_time,
                   meeting_url = EXCLUDED.meeting_url,
-                  event_date = EXCLUDED.event_date
+                  event_date = EXCLUDED.event_date,
+                  calendar_name = EXCLUDED.calendar_name
             """,
-            user_id, google_id, title, start_time, meeting_url, event_date,
+            user_id, google_id, title, start_time, meeting_url, event_date, calendar_name,
         )
 
 

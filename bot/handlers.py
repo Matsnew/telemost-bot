@@ -87,8 +87,10 @@ def events_inline(
         gid = ev["google_id"]
         start = ev["start"]
         time_str = start.strftime("%d.%m %H:%M") if hasattr(start, "strftime") else str(start)
-        title = (ev.get("title") or "Без названия")[:30]
-        label = f"{'✅' if gid in selected_ids else '⬜'} {time_str} — {title}"
+        title = (ev.get("title") or "Без названия")[:28]
+        cal_name = ev.get("calendar_name") or ""
+        owner = f" [{cal_name[:15]}]" if cal_name else ""
+        label = f"{'✅' if gid in selected_ids else '⬜'} {time_str} — {title}{owner}"
         row = [InlineKeyboardButton(text=label, callback_data=f"cal:ev:{gid}")]
         buttons.append(row)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -530,14 +532,23 @@ async def _show_events(call: CallbackQuery, days: int) -> None:
     )
     selected_ids = {e["google_id"] for e in db_events if e["selected"]}
 
+    # Merge calendar_name from DB into the events list for display
+    cal_name_by_gid = {e["google_id"]: e.get("calendar_name", "") for e in db_events}
+    for ev in events:
+        if not ev.get("calendar_name"):
+            ev["calendar_name"] = cal_name_by_gid.get(ev["google_id"], "")
+
     period_label = "сегодня" if days == 1 else f"на {days} дней"
     mode_hint = (
         "Режим: <b>автоматически</b> — подключусь ко всем."
         if auto_join
         else "Режим: <b>ручной</b> — нажми на встречу чтобы выбрать/убрать ✅."
     )
+    # Show note if any events are from colleagues' calendars
+    colleagues = {ev["calendar_name"] for ev in events if ev.get("calendar_name")}
+    col_hint = f"\n👥 Включая календари: {', '.join(sorted(colleagues))}" if colleagues else ""
     await call.message.answer(
-        f"📋 <b>Встречи {period_label}:</b>\n{mode_hint}",
+        f"📋 <b>Встречи {period_label}:</b>\n{mode_hint}{col_hint}",
         reply_markup=events_inline(events, selected_ids, show_select=not auto_join),
     )
 

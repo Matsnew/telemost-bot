@@ -115,7 +115,6 @@ def _fetch_events_sync(token_row: dict, days: int) -> list[dict[str, Any]]:
     )
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        # Return refreshed token data for saving
         token_row["_refreshed"] = {
             "access_token": creds.token,
             "expiry": creds.expiry,
@@ -125,33 +124,62 @@ def _fetch_events_sync(token_row: dict, days: int) -> list[dict[str, Any]]:
     now = datetime.now(timezone.utc)
     time_max = now + timedelta(days=days)
 
-    result = service.events().list(
-        calendarId="primary",
-        timeMin=now.isoformat(),
-        timeMax=time_max.isoformat(),
-        singleEvents=True,
-        orderBy="startTime",
-        maxResults=50,
-    ).execute()
+    # Get all calendars the user has access to (own + shared by colleagues)
+    cal_list = service.calendarList().list(showHidden=False).execute()
+    calendars = [
+        c for c in cal_list.get("items", [])
+        if not c.get("deleted", False)
+        and c.get("accessRole") in ("owner", "writer", "reader")
+    ]
 
-    events = []
-    for item in result.get("items", []):
-        telemost_url = _extract_telemost_url(item)
-        if not telemost_url:
-            continue
-        start_raw = item["start"].get("dateTime") or item["start"].get("date")
+    events: list[dict] = []
+    seen_ids: set[str] = set()  # deduplicate events that appear in multiple calendars
+
+    for cal in calendars:
+        cal_id = cal["id"]
+        is_primary = cal.get("primary", False)
+        cal_name = "" if is_primary else cal.get("summary", cal_id)
+
         try:
-            start_dt = datetime.fromisoformat(start_raw)
-            if start_dt.tzinfo is None:
-                start_dt = start_dt.replace(tzinfo=timezone.utc)
-        except Exception:
+            result = service.events().list(
+                calendarId=cal_id,
+                timeMin=now.isoformat(),
+                timeMax=time_max.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=50,
+            ).execute()
+        except Exception as e:
+            logger.warning("Failed to fetch events from calendar %s: %s", cal_id, e)
             continue
-        events.append({
-            "google_id": item["id"],
-            "title": item.get("summary", "Без названия"),
-            "start": start_dt,
-            "url": telemost_url,
-        })
+
+        for item in result.get("items", []):
+            google_id = item["id"]
+            if google_id in seen_ids:
+                continue
+            seen_ids.add(google_id)
+
+            telemost_url = _extract_telemost_url(item)
+            if not telemost_url:
+                continue
+
+            start_raw = item["start"].get("dateTime") or item["start"].get("date")
+            try:
+                start_dt = datetime.fromisoformat(start_raw)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+
+            events.append({
+                "google_id": google_id,
+                "title": item.get("summary", "Без названия"),
+                "start": start_dt,
+                "url": telemost_url,
+                "calendar_name": cal_name,  # empty string for own calendar
+            })
+
+    events.sort(key=lambda e: e["start"])
     return events
 
 
@@ -171,7 +199,8 @@ async def get_upcoming_events(user_id: int, days: int = 7) -> list[dict[str, Any
     # Upsert events into DB
     for ev in events:
         await models.upsert_calendar_event(
-            user_id, ev["google_id"], ev["title"], ev["start"], ev["url"]
+            user_id, ev["google_id"], ev["title"], ev["start"], ev["url"],
+            ev.get("calendar_name", ""),
         )
 
     return events
