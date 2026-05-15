@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -135,6 +136,21 @@ async def _remove_pulse_sink(module_index: int) -> None:
         logger.exception("Failed to unload PulseAudio module %d", module_index)
 
 
+async def _stop_audio_capture(proc: asyncio.subprocess.Process) -> None:
+    """Send SIGINT so ffmpeg flushes and finalises the WAV file before exiting."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGINT)
+        await asyncio.wait_for(proc.wait(), timeout=8.0)
+    except (asyncio.TimeoutError, ProcessLookupError, OSError):
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except Exception:
+            pass
+
+
 async def _start_audio_capture(audio_path: str, sink_name: str) -> asyncio.subprocess.Process:
     cmd = (
         f"parec --device={sink_name}.monitor --format=s16le --rate=16000 --channels=1 | "
@@ -267,6 +283,25 @@ async def _track_speakers(
         except Exception:
             pass
         await asyncio.sleep(1)
+
+
+def _effective_speaker_timeline(
+    timeline: list[tuple[float, str]],
+    scraped_participants: set[str],
+) -> list[tuple[float, str]]:
+    """Return timeline to use for transcript formatting.
+
+    If the active-speaker tracker caught events — use them as-is.
+    If the timeline is empty but there is exactly one other participant,
+    attribute all speech to that person (better than no labels at all).
+    """
+    if timeline:
+        return timeline
+    others = [p for p in scraped_participants if p != "Protocaller"]
+    if len(others) == 1:
+        logger.info("Speaker timeline empty; attributing all speech to %s", others[0])
+        return [(0.0, others[0])]
+    return timeline
 
 
 async def _count_participants(page) -> int:
@@ -468,17 +503,17 @@ async def _recording_pipeline(
 
             logger.info("Speaker timeline (%d events): %s", len(speaker_timeline), speaker_timeline)
 
-        # Stop audio capture
-        if audio_proc and audio_proc.returncode is None:
-            audio_proc.terminate()
-            await audio_proc.wait()
+        # Stop audio capture — SIGINT lets ffmpeg flush and finalise the file
+        if audio_proc:
+            await _stop_audio_capture(audio_proc)
 
         # ── Transcription ──────────────────────────────────────────────
         await models.update_meeting_status(meeting_id, "transcribing")
         await bot.send_message(user_id, "🎙 Транскрибирую запись…")
 
         segments = await transcribe_audio(audio_path)
-        transcript = format_transcript(segments, speaker_timeline, recording_start_msk)
+        effective_timeline = _effective_speaker_timeline(speaker_timeline, scraped_participants)
+        transcript = format_transcript(segments, effective_timeline, recording_start_msk)
         # Аудиофайл НЕ удаляем — оставляем для отладки
         logger.info("Audio file kept at: %s", audio_path)
 
@@ -537,20 +572,17 @@ async def _recording_pipeline(
 
     except asyncio.CancelledError:
         logger.info("Recording %s cancelled by user", meeting_id)
-        # Stop audio capture before transcribing
-        if audio_proc and audio_proc.returncode is None:
-            audio_proc.terminate()
-            try:
-                await audio_proc.wait()
-            except Exception:
-                pass
+        # Stop audio capture — SIGINT lets ffmpeg flush and finalise the file
+        if audio_proc:
+            await _stop_audio_capture(audio_proc)
         # Process whatever was recorded
         if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
             try:
                 await bot.send_message(user_id, "⏹ Запись остановлена вручную. Обрабатываю что успело записаться…")
                 await models.update_meeting_status(meeting_id, "transcribing")
                 segments = await transcribe_audio(audio_path)
-                transcript = format_transcript(segments, speaker_timeline, recording_start_msk)
+                effective_timeline = _effective_speaker_timeline(speaker_timeline, scraped_participants)
+                transcript = format_transcript(segments, effective_timeline, recording_start_msk)
                 await models.save_transcript(meeting_id, transcript)
                 await models.update_meeting_status(meeting_id, "analyzing")
                 await bot.send_message(user_id, "🤖 Анализирую встречу…")
@@ -613,8 +645,8 @@ async def _recording_pipeline(
         logger.exception("Pipeline error for meeting %s", meeting_id)
         await _handle_error(meeting_id, user_id, bot, str(exc))
     finally:
-        if audio_proc and audio_proc.returncode is None:
-            audio_proc.terminate()
+        if audio_proc:
+            await _stop_audio_capture(audio_proc)
         # Аудио не удаляем (оставляем для отладки)
         if context:
             try:
