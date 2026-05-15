@@ -289,24 +289,25 @@ async def _count_participants(page) -> int:
 
 
 async def _wait_for_meeting_end(page, participants: set[str]) -> None:
-    """Poll every 30 s for reliable meeting-end signals, collecting participant names along the way."""
+    """Poll every 30 s for meeting-end signals, collecting participant names along the way.
+
+    Primary signal: all other participants left for N consecutive polls.
+    Fallback signals: URL change, end-screen DOM element, page crash.
+    """
     initial_url = page.url
+    meeting_started = False   # becomes True once we see at least one other participant
+    empty_polls = 0
+    _EMPTY_POLLS_TO_END = 3   # 3 × PARTICIPANT_POLL_INTERVAL ≈ 90 s of empty room
 
     while True:
         await asyncio.sleep(config.PARTICIPANT_POLL_INTERVAL)
 
-        # Collect participant names on each poll
-        new_names = await _get_participant_names(page)
-        if new_names:
-            participants.update(new_names)
-            logger.info("Participants so far: %s", participants)
-
-        # 1. URL изменился — Телемост перенаправил после завершения
+        # Fallback 1: URL changed
         if page.url != initial_url:
             logger.info("Meeting ended: URL changed → %s", page.url)
             return
 
-        # 2. Появился экран завершения встречи
+        # Fallback 2: end-screen DOM element
         for sel in _MEETING_ENDED_SELECTORS:
             try:
                 if await page.locator(sel).count() > 0:
@@ -315,12 +316,33 @@ async def _wait_for_meeting_end(page, participants: set[str]) -> None:
             except Exception:
                 pass
 
-        # 3. Страница недоступна / упала
+        # Fallback 3: page inaccessible
         try:
             await page.title()
         except Exception:
             logger.info("Meeting ended: page is no longer accessible")
             return
+
+        # Primary: collect current participants
+        new_names = await _get_participant_names(page)
+        if new_names:
+            participants.update(new_names)
+
+        others = [n for n in new_names if n != "Protocaller"]
+        logger.info("Participants so far: %s (now in room: %s)",
+                    participants, others if others else "none")
+
+        if others:
+            meeting_started = True
+            empty_polls = 0
+        elif meeting_started:
+            empty_polls += 1
+            logger.info("No other participants — %d/%d polls before auto-end",
+                        empty_polls, _EMPTY_POLLS_TO_END)
+            if empty_polls >= _EMPTY_POLLS_TO_END:
+                logger.info("Meeting ended: all participants left for %d consecutive polls",
+                            _EMPTY_POLLS_TO_END)
+                return
 
 
 # ── Error handling ────────────────────────────────────────────────────────
