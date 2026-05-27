@@ -846,6 +846,59 @@ async def cmd_reprocess(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Ошибка: <code>{str(exc)[:500]}</code>")
 
 
+@router.message(Command("storage"))
+async def cmd_storage(message: Message) -> None:
+    """Показать содержимое /audio — список WAV-файлов с размерами и датами."""
+    import os as _os
+    from datetime import datetime
+
+    audio_dir = config.AUDIO_DIR
+    try:
+        files = [f for f in _os.listdir(audio_dir) if f.endswith(".wav")]
+    except FileNotFoundError:
+        await message.answer(f"❌ Директория <code>{audio_dir}</code> не найдена.")
+        return
+
+    if not files:
+        await message.answer(f"📂 <code>{audio_dir}</code> пуста — аудиофайлов нет.")
+        return
+
+    # Собираем статистику
+    file_infos = []
+    total_bytes = 0
+    for fname in sorted(files):
+        fpath = _os.path.join(audio_dir, fname)
+        try:
+            stat = _os.stat(fpath)
+            size = stat.st_size
+            mtime = datetime.fromtimestamp(stat.st_mtime)
+            total_bytes += size
+            file_infos.append((fname, size, mtime))
+        except OSError:
+            continue
+
+    # Сортируем по дате (новые первые)
+    file_infos.sort(key=lambda x: x[2], reverse=True)
+
+    def fmt_size(b: int) -> str:
+        if b >= 1024 ** 3:
+            return f"{b / 1024 ** 3:.1f} ГБ"
+        if b >= 1024 ** 2:
+            return f"{b / 1024 ** 2:.1f} МБ"
+        return f"{b / 1024:.0f} КБ"
+
+    lines = [
+        f"💾 <b>Хранилище {audio_dir}</b>",
+        f"📁 Файлов: {len(file_infos)} | 📊 Итого: {fmt_size(total_bytes)}",
+        "",
+    ]
+    for fname, size, mtime in file_infos:
+        short = fname[:8] + "…" + fname[-8:] if len(fname) > 20 else fname
+        lines.append(f"<code>{short}</code>  {fmt_size(size)}  {mtime.strftime('%d.%m %H:%M')}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @router.message()
 async def handle_message(message: Message, bot: Bot, state: FSMContext) -> None:
     if not message.text:
