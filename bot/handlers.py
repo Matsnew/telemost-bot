@@ -846,9 +846,32 @@ async def cmd_reprocess(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Ошибка: <code>{str(exc)[:500]}</code>")
 
 
+def _storage_keyboard(file_infos: list) -> InlineKeyboardMarkup:
+    """Inline-клавиатура: кнопка удаления для каждого файла."""
+    rows = []
+    for fname, size, mtime in file_infos:
+        meeting_id = fname.replace(".wav", "")
+        short = fname[:8] + "…" + fname[-8:] if len(fname) > 20 else fname
+
+        def fmt_size(b: int) -> str:
+            if b >= 1024 ** 3:
+                return f"{b / 1024 ** 3:.1f} ГБ"
+            if b >= 1024 ** 2:
+                return f"{b / 1024 ** 2:.1f} МБ"
+            return f"{b / 1024:.0f} КБ"
+
+        label = f"🗑 {short}  {fmt_size(size)}  {mtime.strftime('%d.%m %H:%M')}"
+        rows.append([InlineKeyboardButton(
+            text=label,
+            callback_data=f"del_audio_ask:{meeting_id}",
+        )])
+    rows.append([InlineKeyboardButton(text="✅ Закрыть", callback_data="storage_close")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 @router.message(Command("storage"))
 async def cmd_storage(message: Message) -> None:
-    """Показать содержимое /audio — список WAV-файлов с размерами и датами."""
+    """Показать содержимое /audio — список WAV-файлов с кнопками удаления."""
     import os as _os
     from datetime import datetime
 
@@ -863,7 +886,6 @@ async def cmd_storage(message: Message) -> None:
         await message.answer(f"📂 <code>{audio_dir}</code> пуста — аудиофайлов нет.")
         return
 
-    # Собираем статистику
     file_infos = []
     total_bytes = 0
     for fname in sorted(files):
@@ -877,7 +899,6 @@ async def cmd_storage(message: Message) -> None:
         except OSError:
             continue
 
-    # Сортируем по дате (новые первые)
     file_infos.sort(key=lambda x: x[2], reverse=True)
 
     def fmt_size(b: int) -> str:
@@ -887,16 +908,85 @@ async def cmd_storage(message: Message) -> None:
             return f"{b / 1024 ** 2:.1f} МБ"
         return f"{b / 1024:.0f} КБ"
 
-    lines = [
-        f"💾 <b>Хранилище {audio_dir}</b>",
-        f"📁 Файлов: {len(file_infos)} | 📊 Итого: {fmt_size(total_bytes)}",
-        "",
-    ]
-    for fname, size, mtime in file_infos:
-        short = fname[:8] + "…" + fname[-8:] if len(fname) > 20 else fname
-        lines.append(f"<code>{short}</code>  {fmt_size(size)}  {mtime.strftime('%d.%m %H:%M')}")
+    text = (
+        f"💾 <b>Хранилище {audio_dir}</b>\n"
+        f"📁 Файлов: {len(file_infos)} | 📊 Итого: {fmt_size(total_bytes)}\n\n"
+        "Нажми на файл чтобы удалить:"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=_storage_keyboard(file_infos))
 
-    await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("del_audio_ask:"))
+async def cb_del_audio_ask(call: CallbackQuery) -> None:
+    """Запрос подтверждения удаления аудиофайла."""
+    import os as _os
+    meeting_id = call.data.split(":", 1)[1]
+    fpath = _os.path.join(config.AUDIO_DIR, f"{meeting_id}.wav")
+
+    if not _os.path.exists(fpath):
+        await call.answer("Файл уже удалён", show_alert=True)
+        return
+
+    size = _os.path.getsize(fpath)
+
+    def fmt_size(b: int) -> str:
+        if b >= 1024 ** 3:
+            return f"{b / 1024 ** 3:.1f} ГБ"
+        if b >= 1024 ** 2:
+            return f"{b / 1024 ** 2:.1f} МБ"
+        return f"{b / 1024:.0f} КБ"
+
+    short = meeting_id[:8] + "…" + meeting_id[-8:]
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"del_audio_confirm:{meeting_id}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="del_audio_cancel"),
+    ]])
+    await call.message.answer(
+        f"Удалить файл?\n<code>{short}.wav</code>  {fmt_size(size)}",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("del_audio_confirm:"))
+async def cb_del_audio_confirm(call: CallbackQuery) -> None:
+    """Удалить аудиофайл после подтверждения."""
+    import os as _os
+    meeting_id = call.data.split(":", 1)[1]
+    fpath = _os.path.join(config.AUDIO_DIR, f"{meeting_id}.wav")
+
+    try:
+        size = _os.path.getsize(fpath) if _os.path.exists(fpath) else 0
+        _os.remove(fpath)
+
+        def fmt_size(b: int) -> str:
+            if b >= 1024 ** 3:
+                return f"{b / 1024 ** 3:.1f} ГБ"
+            if b >= 1024 ** 2:
+                return f"{b / 1024 ** 2:.1f} МБ"
+            return f"{b / 1024:.0f} КБ"
+
+        short = meeting_id[:8] + "…" + meeting_id[-8:]
+        await call.message.edit_text(f"✅ Удалено: <code>{short}.wav</code>  {fmt_size(size)}", parse_mode="HTML")
+        logger.info("Deleted audio file %s (%d bytes) by user %d", fpath, size, call.from_user.id)
+    except FileNotFoundError:
+        await call.message.edit_text("⚠️ Файл уже был удалён.")
+    except OSError as e:
+        await call.message.edit_text(f"❌ Ошибка удаления: <code>{e}</code>", parse_mode="HTML")
+    await call.answer()
+
+
+@router.callback_query(F.data == "del_audio_cancel")
+async def cb_del_audio_cancel(call: CallbackQuery) -> None:
+    await call.message.edit_text("Отменено.")
+    await call.answer()
+
+
+@router.callback_query(F.data == "storage_close")
+async def cb_storage_close(call: CallbackQuery) -> None:
+    await call.message.delete()
+    await call.answer()
 
 
 @router.message()
