@@ -965,6 +965,51 @@ async def cmd_diskusage(message: Message) -> None:
     for fp, sz in all_files[:20]:
         lines.append(f"<code>{fp}</code> — {fmt(sz)}")
 
+    # ── Живые процессы записи (parec/ffmpeg/chromium) ──────────────────────
+    procs: list[str] = []
+    deleted_open: list[tuple[str, str, int]] = []  # (pid+comm, path, size)
+    try:
+        for pid in _os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/comm") as f:
+                    comm = f.read().strip()
+            except OSError:
+                comm = "?"
+            if comm in ("parec", "ffmpeg", "chromium", "chrome"):
+                procs.append(f"pid {pid}: {comm}")
+            # Удалённые-но-открытые файлы этого процесса
+            fd_dir = f"/proc/{pid}/fd"
+            try:
+                fds = _os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                link = f"{fd_dir}/{fd}"
+                try:
+                    target = _os.readlink(link)
+                except OSError:
+                    continue
+                if target.endswith("(deleted)"):
+                    try:
+                        sz = _os.stat(link).st_size  # follows fd → реальный размер
+                    except OSError:
+                        sz = -1
+                    deleted_open.append((f"{pid}/{comm}", target, sz))
+    except OSError:
+        lines.append("\n⚠️ /proc недоступен — пропускаю проверку процессов")
+
+    lines.append(f"\n<b>Процессы записи:</b> {', '.join(procs) if procs else 'нет'}")
+
+    if deleted_open:
+        deleted_open.sort(key=lambda x: x[2], reverse=True)
+        lines.append("\n🔴 <b>Удалённые-но-открытые файлы (держат место!):</b>")
+        for owner, path, sz in deleted_open[:20]:
+            lines.append(f"<code>{owner}</code> {path} — {fmt(sz)}")
+    else:
+        lines.append("\n✅ Удалённых-но-открытых файлов нет")
+
     text = "\n".join(lines)
     for chunk_start in range(0, len(text), 4000):
         await message.answer(text[chunk_start:chunk_start + 4000], parse_mode="HTML")
