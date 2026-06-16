@@ -916,6 +916,60 @@ async def cmd_storage(message: Message) -> None:
     await message.answer(text, parse_mode="HTML", reply_markup=_storage_keyboard(file_infos))
 
 
+@router.message(Command("diskusage"))
+async def cmd_diskusage(message: Message) -> None:
+    """Диагностика: реальная занятость диска (df) и крупнейшие файлы ЛЮБЫХ
+    расширений — в отличие от /storage, который видит только *.wav."""
+    import os as _os
+    import shutil
+
+    def fmt(b: int) -> str:
+        if b >= 1024 ** 3:
+            return f"{b / 1024 ** 3:.2f} ГБ"
+        if b >= 1024 ** 2:
+            return f"{b / 1024 ** 2:.1f} МБ"
+        return f"{b / 1024:.0f} КБ"
+
+    lines: list[str] = ["💽 <b>Диагностика диска</b>\n"]
+
+    # df по ключевым точкам монтирования
+    lines.append("<b>Занятость (df):</b>")
+    for path in (config.AUDIO_DIR, "/app", "/tmp", "/"):
+        try:
+            usage = shutil.disk_usage(path)
+            lines.append(
+                f"<code>{path}</code>: занято {fmt(usage.used)} / "
+                f"всего {fmt(usage.total)} (своб. {fmt(usage.free)})"
+            )
+        except OSError as e:
+            lines.append(f"<code>{path}</code>: ошибка ({e})")
+
+    # Рекурсивный обход AUDIO_DIR — ВСЕ файлы, не только .wav
+    all_files: list[tuple[str, int]] = []
+    walk_total = 0
+    for root, _dirs, fnames in _os.walk(config.AUDIO_DIR):
+        for fn in fnames:
+            fp = _os.path.join(root, fn)
+            try:
+                sz = _os.path.getsize(fp)
+            except OSError:
+                continue
+            all_files.append((fp, sz))
+            walk_total += sz
+
+    lines.append(
+        f"\n<b>Файлы в {config.AUDIO_DIR}:</b> {len(all_files)} шт, "
+        f"сумма {fmt(walk_total)}"
+    )
+    all_files.sort(key=lambda x: x[1], reverse=True)
+    for fp, sz in all_files[:20]:
+        lines.append(f"<code>{fp}</code> — {fmt(sz)}")
+
+    text = "\n".join(lines)
+    for chunk_start in range(0, len(text), 4000):
+        await message.answer(text[chunk_start:chunk_start + 4000], parse_mode="HTML")
+
+
 @router.callback_query(F.data.startswith("del_audio_ask:"))
 async def cb_del_audio_ask(call: CallbackQuery) -> None:
     """Запрос подтверждения удаления аудиофайла."""
