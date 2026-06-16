@@ -85,6 +85,9 @@ async def main() -> None:
     count = await models.reset_stuck_meetings()
     if count:
         logger.warning("Reset %d stuck meetings to 'error' (service was restarted)", count)
+    # Kill any parec/ffmpeg orphaned by a previous run before they fill the volume
+    from services.recorder import cleanup_stray_capture_processes
+    await cleanup_stray_capture_processes()
     logger.info("Service ready.")
     try:
         await asyncio.gather(run_bot(), run_api(), run_scheduler(bot))

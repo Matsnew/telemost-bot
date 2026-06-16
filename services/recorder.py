@@ -136,19 +136,36 @@ async def _remove_pulse_sink(module_index: int) -> None:
         logger.exception("Failed to unload PulseAudio module %d", module_index)
 
 
+def _killpg(pid: int, sig: int) -> None:
+    """Signal the whole process group led by `pid`. Swallows lookup errors."""
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except (ProcessLookupError, OSError):
+        pass
+
+
 async def _stop_audio_capture(proc: asyncio.subprocess.Process) -> None:
-    """Send SIGINT so ffmpeg flushes and finalises the WAV file before exiting."""
+    """Stop the parec|ffmpeg pipeline.
+
+    The pipeline runs in its own process group (start_new_session=True), so we
+    must signal the *group* — signalling only the shell leaves parec/ffmpeg
+    orphaned and writing to the WAV forever. SIGINT lets ffmpeg flush and
+    finalise the file; if it doesn't exit, escalate to SIGKILL on the group.
+    """
     if proc.returncode is not None:
         return
+    # SIGINT to the whole group → ffmpeg flushes and finalises the WAV
+    _killpg(proc.pid, signal.SIGINT)
     try:
-        proc.send_signal(signal.SIGINT)
         await asyncio.wait_for(proc.wait(), timeout=8.0)
+    except asyncio.TimeoutError:
+        pass
+    # Whatever the shell's fate, make sure no group member survives
+    _killpg(proc.pid, signal.SIGKILL)
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=3.0)
     except (asyncio.TimeoutError, ProcessLookupError, OSError):
-        try:
-            proc.terminate()
-            await asyncio.wait_for(proc.wait(), timeout=3.0)
-        except Exception:
-            pass
+        pass
 
 
 async def _start_audio_capture(audio_path: str, sink_name: str) -> asyncio.subprocess.Process:
@@ -156,12 +173,15 @@ async def _start_audio_capture(audio_path: str, sink_name: str) -> asyncio.subpr
         f"parec --device={sink_name}.monitor --format=s16le --rate=16000 --channels=1 | "
         f"ffmpeg -y -f s16le -ar 16000 -ac 1 -i pipe:0 {audio_path}"
     )
+    # start_new_session=True puts the shell *and* its parec/ffmpeg children in a
+    # dedicated process group so _stop_audio_capture can kill the entire pipeline.
     proc = await asyncio.create_subprocess_shell(
         cmd,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
     )
-    logger.info("Audio capture started → %s", audio_path)
+    logger.info("Audio capture started → %s (pgid %d)", audio_path, proc.pid)
     return proc
 
 
@@ -660,6 +680,31 @@ async def _recording_pipeline(
                 pass
         if module_index is not None:
             await _remove_pulse_sink(module_index)
+
+
+async def cleanup_stray_capture_processes() -> None:
+    """Kill any orphaned parec/ffmpeg left over from a previous run.
+
+    A recording pipeline that survived a crash/restart keeps writing to its WAV
+    (or to a since-deleted, still-open inode) and silently fills the volume.
+    Run this once on startup — there are no legitimate parec/ffmpeg processes
+    when the service has just booted.
+    """
+    for name in ("parec", "ffmpeg"):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pkill", "-9", "-x", name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            rc = await proc.wait()
+            if rc == 0:
+                logger.warning("Killed stray %s process(es) on startup", name)
+        except FileNotFoundError:
+            logger.warning("pkill not available; skipping stray-process cleanup")
+            return
+        except Exception:
+            logger.exception("Failed to clean up stray %s processes", name)
 
 
 def start_recording(
