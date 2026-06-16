@@ -1015,6 +1015,47 @@ async def cmd_diskusage(message: Message) -> None:
         await message.answer(text[chunk_start:chunk_start + 4000], parse_mode="HTML")
 
 
+@router.message(Command("fstrim"))
+async def cmd_fstrim(message: Message) -> None:
+    """Вернуть свободные блоки volume нижележащему хранилищу (discard/TRIM).
+
+    Нужно, когда df показывает мало занятого места, а метрика Railway держит
+    исторический максимум: ФС освободила блоки, но они не были возвращены
+    блочному устройству. fstrim это исправляет (если volume поддерживает discard).
+    """
+    await message.answer("⏳ Запускаю <code>fstrim</code>…")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "fstrim", "-v", config.AUDIO_DIR,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+        output = (out or b"").decode(errors="replace").strip() or "(пустой вывод)"
+        if proc.returncode == 0:
+            await message.answer(
+                f"✅ <b>fstrim завершён</b>\n<code>{output}</code>\n\n"
+                "Метрика Railway должна упасть в течение нескольких минут.",
+                parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                f"⚠️ <b>fstrim код {proc.returncode}</b>\n<code>{output}</code>\n\n"
+                "Если discard не поддерживается — придётся пересоздать volume.",
+                parse_mode="HTML",
+            )
+    except FileNotFoundError:
+        await message.answer(
+            "❌ <code>fstrim</code> не установлен в образе. "
+            "Добавлен util-linux в Dockerfile — нужен передеплой.",
+            parse_mode="HTML",
+        )
+    except asyncio.TimeoutError:
+        await message.answer("⏱ fstrim не завершился за 120 с.")
+    except Exception as exc:
+        await message.answer(f"❌ Ошибка: <code>{str(exc)[:500]}</code>", parse_mode="HTML")
+
+
 @router.callback_query(F.data.startswith("del_audio_ask:"))
 async def cb_del_audio_ask(call: CallbackQuery) -> None:
     """Запрос подтверждения удаления аудиофайла."""
